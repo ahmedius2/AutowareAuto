@@ -24,6 +24,7 @@ from torch.profiler import profile, record_function, ProfilerActivity
 #from callback_profile.msg import CallbackProfile
 
 PROFILE = False
+DEBUG = False
 
 # has to be converted to [N, 6]
 def f32_multi_arr_to_tensor(float_arr):
@@ -41,10 +42,11 @@ class InferenceNode(Node):
 
         self.period_sec = period_sec
         point_cloud_topic = 'accumulated_pc_as_arr'
-        #output_topic = '/valor_detected_objs_as_arr'
-        #self.arr_publisher = self.create_publisher(Float32MultiArrayStamped, output_topic, 10)
         output_topic = 'valor_detected_objs'
-        self.det_publisher = self.create_publisher(DetectedObjects, output_topic, 10)
+        self.arr_publisher = self.create_publisher(Float32MultiArrayStamped, output_topic, 10)
+        if DEBUG:
+            output_topic = '~/valor_detected_objs_debug'
+            self.det_publisher = self.create_publisher(DetectedObjects, output_topic, 10)
         self.pc_sub = self.create_subscription(Float32MultiArrayStamped, point_cloud_topic,
                                                self.pc_callback, 1)
 
@@ -191,9 +193,10 @@ class InferenceNode(Node):
     def publish_dets(self, pred_dict, stamp):
         if pred_dict['pred_labels'].size(0) > 0:
             float_arr = pred_dict_to_f32_multi_arr(pred_dict, stamp)
-            #self.arr_publisher.publish(float_arr)
-            det_objs = f32_multi_arr_to_detected_objs(float_arr, self.cls_mapping)
-            self.det_publisher.publish(det_objs)
+            self.arr_publisher.publish(float_arr)
+            if DEBUG:
+                det_objs = f32_multi_arr_to_detected_objs(float_arr, self.cls_mapping)
+                self.det_publisher.publish(det_objs)
         else:
             print('Not publishing since no objects were detected...')
 

@@ -38,6 +38,7 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
+#include <valo_msgs/msg/float32_multi_array_stamped.hpp>
 
 #include <memory>
 #include <optional>
@@ -137,10 +138,13 @@ class ObstaclePointCloudBasedValidator : public rclcpp::Node
 {
 public:
   explicit ObstaclePointCloudBasedValidator(const rclcpp::NodeOptions & node_options);
+	autoware_perception_msgs::msg::DetectedObjects::SharedPtr convertMultiArrToDetObjs(
+		const valo_msgs::msg::Float32MultiArrayStamped::ConstSharedPtr & input_objects_raw_msgs);
 
 private:
   rclcpp::Publisher<autoware_perception_msgs::msg::DetectedObjects>::SharedPtr objects_pub_;
-  message_filters::Subscriber<autoware_perception_msgs::msg::DetectedObjects> objects_sub_;
+  std::unique_ptr<message_filters::Subscriber<autoware_perception_msgs::msg::DetectedObjects>> objects_sub_;
+  std::unique_ptr<message_filters::Subscriber<valo_msgs::msg::Float32MultiArrayStamped>> multiarr_sub_;
   message_filters::Subscriber<sensor_msgs::msg::PointCloud2> obstacle_pointcloud_sub_;
   std::unique_ptr<autoware::universe_utils::DebugPublisher> debug_publisher_{nullptr};
   tf2_ros::Buffer tf_buffer_;
@@ -148,13 +152,21 @@ private:
 
   typedef message_filters::sync_policies::ApproximateTime<
     autoware_perception_msgs::msg::DetectedObjects, sensor_msgs::msg::PointCloud2>
-    SyncPolicy;
-  typedef message_filters::Synchronizer<SyncPolicy> Sync;
-  Sync sync_;
+    SyncPolicyDetObj;
+  typedef message_filters::sync_policies::ApproximateTime<
+    valo_msgs::msg::Float32MultiArrayStamped, sensor_msgs::msg::PointCloud2>
+    SyncPolicyMultiArr;
+
+  typedef message_filters::Synchronizer<SyncPolicyDetObj> SyncDetObj;
+  typedef message_filters::Synchronizer<SyncPolicyMultiArr> SyncMultiArr;
+  // One of them will be used
+  std::unique_ptr<SyncDetObj> sync_detobj_;
+  std::unique_ptr<SyncMultiArr> sync_multiarr_;
   PointsNumThresholdParam points_num_threshold_param_;
 
   std::shared_ptr<Debugger> debugger_;
   bool using_2d_validator_;
+  std::string lidar_detection_model_;
   std::unique_ptr<Validator> validator_;
   std::unique_ptr<autoware::universe_utils::PublishedTimePublisher> published_time_publisher_;
 
@@ -162,6 +174,11 @@ private:
   void onObjectsAndObstaclePointCloud(
     const autoware_perception_msgs::msg::DetectedObjects::ConstSharedPtr & input_objects,
     const sensor_msgs::msg::PointCloud2::ConstSharedPtr & input_obstacle_pointcloud);
+
+  void onMultiArrAndObstaclePointCloud(
+    const valo_msgs::msg::Float32MultiArrayStamped::ConstSharedPtr & input_objects,
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr & input_obstacle_pointcloud);
+
 };
 
 }  // namespace obstacle_pointcloud

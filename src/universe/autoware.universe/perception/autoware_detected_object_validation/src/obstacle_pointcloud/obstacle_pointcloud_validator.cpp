@@ -277,13 +277,11 @@ bool Validator3D::validate_object(
 ObstaclePointCloudBasedValidator::ObstaclePointCloudBasedValidator(
   const rclcpp::NodeOptions & node_options)
 : rclcpp::Node("obstacle_pointcloud_based_validator", node_options),
-  objects_sub_(this, "~/input/detected_objects", rclcpp::QoS{1}.get_rmw_qos_profile()),
   obstacle_pointcloud_sub_(
     this, "~/input/obstacle_pointcloud",
     rclcpp::SensorDataQoS{}.keep_last(1).get_rmw_qos_profile()),
   tf_buffer_(get_clock()),
-  tf_listener_(tf_buffer_),
-  sync_(SyncPolicy(10), objects_sub_, obstacle_pointcloud_sub_)
+  tf_listener_(tf_buffer_)
 {
   points_num_threshold_param_.min_points_num =
     declare_parameter<std::vector<int64_t>>("min_points_num");
@@ -293,12 +291,26 @@ ObstaclePointCloudBasedValidator::ObstaclePointCloudBasedValidator(
     declare_parameter<std::vector<double>>("min_points_and_distance_ratio");
 
   using_2d_validator_ = declare_parameter<bool>("using_2d_validator");
+  lidar_detection_model_ = declare_parameter("lidar_detection_model", "centerpoint");
 
   using std::placeholders::_1;
   using std::placeholders::_2;
 
-  sync_.registerCallback(
-    std::bind(&ObstaclePointCloudBasedValidator::onObjectsAndObstaclePointCloud, this, _1, _2));
+  if(lidar_detection_model_ == "valor"){
+    multiarr_sub_ = std::make_unique<message_filters::Subscriber<valo_msgs::msg::Float32MultiArrayStamped>>(
+        this, "~/input/detected_objects", rclcpp::QoS{1}.get_rmw_qos_profile());
+    sync_multiarr_ = std::make_unique<SyncMultiArr>(SyncPolicyMultiArr(10), *multiarr_sub_, obstacle_pointcloud_sub_);
+    sync_multiarr_->registerCallback(
+        std::bind(&ObstaclePointCloudBasedValidator::onMultiArrAndObstaclePointCloud, this, _1, _2));
+  }
+  else{
+    objects_sub_ = std::make_unique<message_filters::Subscriber<autoware_perception_msgs::msg::DetectedObjects>>(
+        this, "~/input/detected_objects", rclcpp::QoS{1}.get_rmw_qos_profile());
+    sync_detobj_ = std::make_unique<SyncDetObj>(SyncPolicyDetObj(10), *objects_sub_, obstacle_pointcloud_sub_);
+    sync_detobj_->registerCallback(
+        std::bind(&ObstaclePointCloudBasedValidator::onObjectsAndObstaclePointCloud, this, _1, _2));
+  }
+
   if (using_2d_validator_) {
     validator_ = std::make_unique<Validator2D>(points_num_threshold_param_);
   } else {
@@ -371,6 +383,86 @@ void ObstaclePointCloudBasedValidator::onObjectsAndObstaclePointCloud(
   debug_publisher_->publish<tier4_debug_msgs::msg::Float64Stamped>(
     "debug/pipeline_latency_ms", pipeline_latency);
 }
+
+
+autoware_perception_msgs::msg::DetectedObjects::SharedPtr ObstaclePointCloudBasedValidator::convertMultiArrToDetObjs(
+		const valo_msgs::msg::Float32MultiArrayStamped::ConstSharedPtr & input_objects_raw_msgs)
+{
+	//11 elems: x y z dimx dimy dimz yaw velx vely score label
+  //assert(input_objects_raw_msgs->array.layout.dim[1] == 11);
+  using Label = autoware_perception_msgs::msg::ObjectClassification;
+	const std::array<int, 6> cls_mapping = {-1, Label::CAR, Label::TRUCK, Label::BUS, Label::BICYCLE, Label::PEDESTRIAN}; // Is it correct?
+
+	auto detected_objs = std::make_shared<autoware_perception_msgs::msg::DetectedObjects>();
+	detected_objs->header = input_objects_raw_msgs->header;
+
+	const int num_objs = input_objects_raw_msgs->array.layout.dim[0].size;
+	const int stride = input_objects_raw_msgs->array.layout.dim[1].stride;
+	auto& data_vec = input_objects_raw_msgs->array.data;
+	detected_objs->objects.resize(num_objs);
+
+//    RCLCPP_INFO(rclcpp::get_logger("multi_object_tracker"), "Objects:\n");
+	for(auto i=0; i<num_objs; ++i){
+		auto& obj = detected_objs->objects[i];
+		auto obj_idx = i*stride;
+
+		obj.existence_probability = data_vec[obj_idx + 9];
+
+		autoware_perception_msgs::msg::ObjectClassification classification;
+		classification.probability = 1.0f;
+		auto label_pcdet = static_cast<unsigned char>(data_vec[obj_idx + 10]);
+		if (label_pcdet >= 1 && static_cast<size_t>(label_pcdet) < cls_mapping.size()) {
+			classification.label = cls_mapping[label_pcdet];
+		} else {
+			classification.label = Label::UNKNOWN;
+			RCLCPP_WARN_STREAM(this->get_logger(), "Unexpected label: UNKNOWN is set.");
+		}
+
+		obj.classification.emplace_back(classification);
+
+		if (object_recognition_utils::isCarLikeVehicle(classification.label)) {
+			obj.kinematics.orientation_availability =
+				autoware_perception_msgs::msg::DetectedObjectKinematics::SIGN_UNKNOWN;
+		}
+
+		float yaw = data_vec[obj_idx + 6]; // - tier4_autoware_utils::pi / 2;
+		obj.kinematics.pose_with_covariance.pose.position =
+			autoware::universe_utils::createPoint(data_vec[obj_idx], data_vec[obj_idx + 1], data_vec[obj_idx + 2]);
+		obj.kinematics.pose_with_covariance.pose.orientation =
+			autoware::universe_utils::createQuaternionFromYaw(yaw);
+		obj.shape.type = autoware_perception_msgs::msg::Shape::BOUNDING_BOX;
+		obj.shape.dimensions =
+			autoware::universe_utils::createTranslation(data_vec[obj_idx + 3], data_vec[obj_idx + 4], data_vec[obj_idx + 5]);
+
+		// twist
+		float vel_x = data_vec[obj_idx + 7];
+		float vel_y = data_vec[obj_idx + 8];
+		geometry_msgs::msg::Twist twist;
+		twist.linear.x = std::sqrt(std::pow(vel_x, 2) + std::pow(vel_y, 2));
+		twist.angular.z = 2 * (std::atan2(vel_y, vel_x) - yaw);
+		obj.kinematics.twist_with_covariance.twist = twist;
+		obj.kinematics.has_twist = true;
+
+			//Lets try doing the inverse calculation , just for debugging
+//        auto rpy = tier4_autoware_utils::getRPY(obj.kinematics.pose_with_covariance.pose.orientation);
+//        auto new_yaw = rpy.z; // this ir right
+//        float vel_x_new = twist.linear.x * std::cos(new_yaw);
+//        float vel_y_new = twist.linear.x * std::sin(new_yaw);
+//        RCLCPP_INFO(rclcpp::get_logger("multi_object_tracker"), "yaw: %f %f vel_x: %f %f vel_y: %f %f\n", yaw, new_yaw, vel_x, vel_x_new, vel_y, vel_y_new);
+	}
+	return detected_objs;
+}
+
+
+void ObstaclePointCloudBasedValidator::onMultiArrAndObstaclePointCloud(
+    const valo_msgs::msg::Float32MultiArrayStamped::ConstSharedPtr & input_objects,
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr & input_obstacle_pointcloud){
+
+	auto detobjs = convertMultiArrToDetObjs(input_objects);
+	onObjectsAndObstaclePointCloud(detobjs, input_obstacle_pointcloud);
+}
+
+
 
 }  // namespace obstacle_pointcloud
 }  // namespace autoware::detected_object_validation

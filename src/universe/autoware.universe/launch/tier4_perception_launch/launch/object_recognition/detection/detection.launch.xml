@@ -236,6 +236,7 @@
       <arg name="input/objects" value="$(var lidar_ml_detector/output/objects)"/>
       <arg name="output/objects" value="$(var lidar_object_filter/output/objects)"/>
       <arg name="objects_validation_method" value="obstacle_pointcloud"/>
+      <arg name="lidar_detection_model" value="$(var lidar_detection_model)"/>
     </include>
   </group>
   <group if="$(var switch/filter/camera_lidar_object)">

@@ -53,15 +53,15 @@ ros2 topic pub -1 /awsim/traffic_reset std_msgs/msg/String "data: 'reload'"
 
 #sleep 200
 # wait for autoware to initialize, it should be done one the message comes
-ros2 topic echo "/perception/object_recognition/detection/valor/objects" \
+ros2 topic echo "/perception/object_recognition/detection/valor/validation/objects" \
   autoware_perception_msgs/msg/DetectedObjects --once
 
 send_goal_pose 
 sleep 20 # wait for planning
 
 #Ideal is to do the Engage immadiately after reset, but it can take a few seconds
-ros2 topic pub -1 /awsim/traffic_reset std_msgs/msg/String "data: '150_150'" 
-ros2 topic pub -1 /autoware/engage autoware_vehicle_msgs/msg/Engage '{engage: True}'
+chrt -f 90 ros2 topic pub -1 /awsim/traffic_reset std_msgs/msg/String "data: '150_150'"
+chrt -f 90 ros2 topic pub -1 /autoware/engage autoware_vehicle_msgs/msg/Engage '{engage: True}'
 run_bag_record
 RECORD_PGID=$ros2_pgid
 

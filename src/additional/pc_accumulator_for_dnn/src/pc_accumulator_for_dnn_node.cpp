@@ -137,15 +137,15 @@ void PCloudAccForDnnComponent::ego_pose_callback(
   }
 
   valo_msgs::msg::Float32MultiArrayStamped multarr;
-  multarr.header.frame_id = "base_link";
+  multarr.header.frame_id = "velodyne_top";
   multarr.header.stamp = pairs.front().first->header.stamp;
-  auto num_fields = 6; // batch_id, x, y, z, i ,t
+  auto num_fields = 4; // x, y, z, t
   auto dim1 = std_msgs::msg::MultiArrayDimension();
   dim1.label = "num_points";
   dim1.size = num_all_points;
   dim1.stride = num_all_points * num_fields;
   auto dim2 = std_msgs::msg::MultiArrayDimension();
-  dim2.label = "bxyzit";
+  dim2.label = "xyzt"; // no intensity cuz awsim doesnt have it
   dim2.size = num_fields;
   dim2.stride = num_fields;
   multarr.array.layout.dim.push_back(dim1);
@@ -156,6 +156,7 @@ void PCloudAccForDnnComponent::ego_pose_callback(
   sensor_msgs::msg::PointCloud2 debug_pc;
   if(debug_mode_){
     debug_pc = *most_recent_pc;
+    debug_pc.header.frame_id = "velodyne_top";
     debug_pc.width = num_all_points;
     debug_pc.data.resize(num_all_points * debug_pc.point_step); // bytes array
   }
@@ -165,11 +166,24 @@ void PCloudAccForDnnComponent::ego_pose_callback(
       tf->transform.rotation.x,
       tf->transform.rotation.y,
       tf->transform.rotation.z);
-//  q1.normalize();
   Eigen::Transform<float,3,Eigen::Affine> map_to_bl_t = Eigen::Translation3f(
       tf->transform.translation.x,
       tf->transform.translation.y,
       tf->transform.translation.z) * q1;
+
+  // This is a static transformation
+  auto baselink_to_velotop_t = tf_buffer_->lookupTransform("velodyne_top",
+      "base_link", tf2::TimePointZero);
+
+  Eigen::Quaternion<float> q3(
+      baselink_to_velotop_t.transform.rotation.w,
+      baselink_to_velotop_t.transform.rotation.x,
+      baselink_to_velotop_t.transform.rotation.y,
+      baselink_to_velotop_t.transform.rotation.z);
+  Eigen::Transform<float,3,Eigen::Affine> bl_to_vlt_t = Eigen::Translation3f(
+      baselink_to_velotop_t.transform.translation.x,
+      baselink_to_velotop_t.transform.translation.y,
+      baselink_to_velotop_t.transform.translation.z) * q3;
 
   int point_counter = 0;
   for (auto p : pairs){ // from newest to oldest
@@ -197,24 +211,26 @@ void PCloudAccForDnnComponent::ego_pose_callback(
           tf_sel->transform.rotation.x,
           tf_sel->transform.rotation.y,
           tf_sel->transform.rotation.z);
-//      q2.normalize();
       Eigen::Transform<float,3,Eigen::Affine> map_to_bl_t2= Eigen::Translation3f(
           tf_sel->transform.translation.x,
           tf_sel->transform.translation.y,
           tf_sel->transform.translation.z) * q2;
 
-      points = map_to_bl_t.matrix() * map_to_bl_t2.inverse().matrix() * points;
+      points = bl_to_vlt_t.matrix() * map_to_bl_t.matrix() * \
+               map_to_bl_t2.inverse().matrix() * points;
+    }
+    else{
+      points = bl_to_vlt_t.matrix() * points;
     }
 
     for(size_t i=0; i_itr != i_itr.end(); ++i, ++i_itr, ++point_counter){
       //NOTE still need to do the transformation and timing
       auto idx = point_counter * num_fields;
-      multarr.array.data[idx] = 0; // batch size always 0
-      multarr.array.data[idx+1] = points(0, i);
-      multarr.array.data[idx+2] = points(1, i);
-      multarr.array.data[idx+3] = points(2, i);
-      multarr.array.data[idx+4] = (float) *i_itr; // should be between 0 and 255
-      multarr.array.data[idx+5] = tdiff; // save it as sec
+      //multarr.array.data[idx] = 0; // batch size always 0
+      multarr.array.data[idx] = points(0, i);
+      multarr.array.data[idx+1] = points(1, i);
+      multarr.array.data[idx+2] = points(2, i);
+      multarr.array.data[idx+3] = tdiff; // save it as sec
       if(debug_mode_){
         // ignore rettype and channel?
         uint8_t* addr = &debug_pc.data[point_counter * debug_pc.point_step];
@@ -222,7 +238,7 @@ void PCloudAccForDnnComponent::ego_pose_callback(
         ((float*)addr)[1] = points(1, i);
         ((float*)addr)[2] = points(2, i);
         addr += sizeof(float)*3;
-        addr[0] = *i_itr;
+        addr[0] = *i_itr; // its just 0 for awsim but save it anyway
         addr[1] = *rt_itr;
         addr += sizeof(uint8_t)*2;
         ((uint16_t*)addr)[0] = *c_itr;
@@ -237,7 +253,8 @@ void PCloudAccForDnnComponent::ego_pose_callback(
   std::chrono::duration<double, std::milli> duration = end - start;
   if(debug_mode_){
     debug_pc_pub_->publish(debug_pc);
-    RCLCPP_INFO(this->get_logger(), "Published %d points from %d point clouds. Took %.1f ms.", point_counter, pairs.size(), duration.count());
+    RCLCPP_INFO(this->get_logger(), "Published %d points from %d point clouds. Took %.1f ms.",
+        point_counter, pairs.size(), duration.count());
   }
 }
 }  // namespace pc_acc_for_dnn

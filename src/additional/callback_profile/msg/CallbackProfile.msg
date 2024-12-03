@@ -1,0 +1,6 @@
+builtin_interfaces/Time start_stamp
+builtin_interfaces/Time end_stamp
+uint64 period_id
+uint64 cpu_cycles
+uint64 cpu_clock_time_ns
+uint64 task_clock_time_ns

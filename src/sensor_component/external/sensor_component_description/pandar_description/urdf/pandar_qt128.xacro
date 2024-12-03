@@ -1,0 +1,59 @@
+<?xml version="1.0"?>
+<robot name="pandar_qt128" xmlns:xacro="http://ros.org/wiki/xacro">
+  <!-- Define materials -->
+  <material name="gray_material">
+    <color rgba="0.9 0.9 0.9 1.0"/>
+  </material>
+
+  <xacro:macro name="PandarQT-128" params="name parent x y z roll pitch yaw">
+    <!-- Joint for LiDAR base link -->
+    <joint name="${name}_base_mount_joint" type="fixed">
+      <origin rpy="${roll} ${pitch} ${yaw}" xyz="${x} ${y} ${z}"/>
+      <parent link="${parent}"/>
+      <child link="${name}_base_link"/>
+    </joint>
+    <!-- Joint for Laser Firing Position -->
+    <joint name="${name}_base_scan_joint" type="fixed">
+      <origin xyz="0 0 0.0582" rpy="0 0 0"/>
+      <parent link="${name}_base_link"/>
+      <child link="${name}"/>
+    </joint>
+
+    <!-- Link for LiDAR base link -->
+    <link name="${name}_base_link">
+      <!-- LiDAR visualization from bottom -->
+      <visual>
+        <geometry>
+          <cylinder length="0.029" radius="0.043"/>
+        </geometry>
+        <origin xyz="0 0 0.0144" rpy="0 0 0"/>
+        <material name="gray_material"/>
+      </visual>
+      <visual>
+        <geometry>
+          <cylinder length="0.0481" radius="0.043"/>
+        </geometry>
+        <origin xyz="0 0 0.0528" rpy="0 0 0"/>
+        <material name="gray_material"/>
+      </visual>
+      <visual>
+        <geometry>
+          <cylinder length="0.007" radius="0.043"/>
+        </geometry>
+        <origin xyz="0 0 0.08" rpy="0 0 0"/>
+        <material name="gray_material"/>
+      </visual>
+      <!-- LiDAR connector visualization -->
+      <visual>
+        <geometry>
+          <cylinder length="0.015" radius="0.0057"/>
+        </geometry>
+        <origin xyz="0 0.051 0.0144" rpy="1.57 0 0"/>
+        <material name="gray_material"/>
+      </visual>
+    </link>
+
+    <!-- Link for Laser Firing Position -->
+    <link name="${name}"/>
+  </xacro:macro>
+</robot>

@@ -1,0 +1,55 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro">
+  <xacro:macro name="PandarOT-128" params="name parent x y z roll pitch yaw">
+    <joint name="${name}_base_mount_joint" type="fixed">
+      <origin rpy="${roll} ${pitch} ${yaw}" xyz="${x} ${y} ${z}"/>
+      <parent link="${parent}"/>
+      <child link="${name}_base_link"/>
+    </joint>
+
+    <link name="${name}_base_link">
+      <visual>
+        <geometry>
+          <cylinder length="0.05" radius="0.055"/>
+        </geometry>
+        <origin xyz="0 0 0.025" rpy="0 0 0"/>
+        <material name="gray">
+          <color rgba="0.9 0.9 0.9 1.0"/>
+        </material>
+      </visual>
+      <visual>
+        <geometry>
+          <cylinder length="0.08" radius="0.053"/>
+        </geometry>
+        <origin xyz="0 0 0.09" rpy="0 0 0"/>
+        <material name="gray">
+          <color rgba="0.9 0.9 0.9 1.0"/>
+        </material>
+      </visual>
+      <visual>
+        <geometry>
+          <cylinder length="0.006" radius="0.055"/>
+        </geometry>
+        <origin xyz="0 0 0.133" rpy="0 0 0"/>
+        <material name="gray"/>
+      </visual>
+      <inertial>
+        <mass value="0.0"/>
+        <origin xyz="0 0 0"/>
+        <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+      </inertial>
+    </link>
+    <joint name="${name}_base_scan_joint" type="fixed">
+      <origin xyz="0 0 0.09" rpy="0 0 0"/>
+      <parent link="${name}_base_link"/>
+      <child link="${name}"/>
+    </joint>
+    <link name="${name}">
+      <inertial>
+        <mass value="0.0"/>
+        <origin xyz="0 0 0"/>
+        <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+      </inertial>
+    </link>
+  </xacro:macro>
+</robot>

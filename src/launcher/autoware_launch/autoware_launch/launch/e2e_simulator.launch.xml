@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch>
+  <!-- Essential parameters -->
+  <arg name="use_sim_time" default="true" description="use simulation time"/>
+  <arg name="map_path" description="point cloud and lanelet2 map directory path"/>
+  <arg name="vehicle_model" default="sample_vehicle" description="vehicle model name"/>
+  <arg name="sensor_model" default="sample_sensor_kit" description="sensor model name"/>
+  <arg name="data_path" default="$(env HOME)/autoware_data" description="packages data and artifacts directory path"/>
+  <arg name="simulator_type" default="awsim" description="select the simulator type ('awsim' or 'carla')"/>
+
+  <!-- launch module preset -->
+  <arg name="planning_module_preset" default="default" description="planning module preset"/>
+
+  <!-- Optional parameters -->
+  <!-- Modules to be launched -->
+  <arg name="vehicle" default="true" description="launch vehicle"/>
+  <arg name="system" default="true" description="launch system"/>
+  <arg name="map" default="true" description="launch map"/>
+  <arg name="sensing" default="true" description="launch sensing"/>
+  <arg name="localization" default="true" description="launch localization"/>
+  <arg name="perception" default="true" description="launch perception"/>
+  <arg name="planning" default="true" description="launch planning"/>
+  <arg name="control" default="true" description="launch control"/>
+  <!-- Map -->
+  <arg name="lanelet2_map_file" default="lanelet2_map.osm" description="lanelet2 map file name"/>
+  <arg name="pointcloud_map_file" default="pointcloud_map.pcd" description="pointcloud map file name"/>
+  <!-- Perception -->
+  <arg name="traffic_light_namespace" default="[traffic_light]" description="traffic light recognition namespace"/>
+  <!-- Control -->
+  <!-- Vehicle -->
+  <arg name="launch_vehicle_interface" default="false"/>
+  <!-- System -->
+  <arg name="launch_system_monitor" default="false" description="launch system monitor"/>
+  <arg name="launch_dummy_diag_publisher" default="false" description="launch dummy diag publisher"/>
+  <!-- Sensing -->
+  <arg name="launch_sensing_driver" default="false"/>
+  <!-- Tools -->
+  <arg name="rviz" default="true" description="launch rviz"/>
+  <arg name="rviz_config" default="$(find-pkg-share autoware_launch)/rviz/autoware.rviz" description="rviz config"/>
+  <group scoped="false" if="$(eval '\'$(var simulator_type)\' == \'carla\'')">
+    <include file="$(find-pkg-share autoware_carla_interface)/autoware_carla_interface.launch.xml"/>
+  </group>
+
+  <group scoped="false">
+    <include file="$(find-pkg-share autoware_launch)/launch/autoware.launch.xml">
+      <!-- Common -->
+      <arg name="map_path" value="$(var map_path)"/>
+      <arg name="vehicle_model" value="$(var vehicle_model)"/>
+      <arg name="sensor_model" value="$(var sensor_model)"/>
+      <arg name="data_path" value="$(var data_path)"/>
+      <!-- launch module preset -->
+      <arg name="planning_module_preset" value="$(var planning_module_preset)"/>
+      <!-- Modules to be launched -->
+      <arg name="launch_vehicle" value="$(var vehicle)"/>
+      <arg name="launch_map" value="$(var map)"/>
+      <arg name="launch_sensing" value="$(var sensing)"/>
+      <arg name="launch_localization" value="$(var localization)"/>
+      <arg name="launch_perception" value="$(var perception)"/>
+      <arg name="launch_planning" value="$(var planning)"/>
+      <arg name="launch_control" value="$(var control)"/>
+      <!-- Global parameters -->
+      <arg name="use_sim_time" value="$(var use_sim_time)"/>
+      <!-- Vehicle -->
+      <arg name="launch_vehicle_interface" value="$(var launch_vehicle_interface)"/>
+      <!-- Map -->
+      <arg name="lanelet2_map_file" value="$(var lanelet2_map_file)"/>
+      <arg name="pointcloud_map_file" value="$(var pointcloud_map_file)"/>
+      <!-- System -->
+      <arg name="launch_system_monitor" value="$(var launch_system_monitor)"/>
+      <arg name="launch_dummy_diag_publisher" value="$(var launch_dummy_diag_publisher)"/>
+      <arg name="diagnostic_graph_aggregator_graph_path" value="$(find-pkg-share autoware_launch)/config/system/diagnostic_graph_aggregator/autoware-awsim.yaml"/>
+      <!-- Sensing -->
+      <arg name="launch_sensing_driver" value="$(var launch_sensing_driver)"/>
+      <!-- Perception-->
+      <arg name="traffic_light_recognition/enable_fine_detection" value="false"/>
+      <arg name="all_traffic_light_camera" value="$(var traffic_light_namespace)"/>
+      <!-- Tools -->
+      <arg name="rviz" value="$(var rviz)"/>
+      <arg name="rviz_config" value="$(var rviz_config)"/>
+    </include>
+  </group>
+</launch>

@@ -1,0 +1,9 @@
+builtin_interfaces/Time timestamp
+uint64 period_id
+uint64 cpu_cycles
+uint64 instructions
+uint64 cache_references
+uint64 cache_misses
+uint64 cpu_clock_time_ns
+uint64 task_clock_time_ns
+uint64 page_faults

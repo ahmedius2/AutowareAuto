@@ -85,7 +85,7 @@ class InferenceNode(Node):
 
         def_cfg_file  = "tools/cfgs/nuscenes_models/pillar01_015_02_024_03_valor_awsim.yaml"
         def_cfg_file  = os.path.join(pth, def_cfg_file)
-        def_ckpt_file = "models/pillar01_015_02_024_03_valor_awsim_epoch30.pth"
+        def_ckpt_file = "models/pillar01_015_02_024_03_valor_awsim_epoch60.pth"
         def_ckpt_file = os.path.join(pth, def_ckpt_file)
 
         cfg_from_yaml_file(def_cfg_file, cfg)

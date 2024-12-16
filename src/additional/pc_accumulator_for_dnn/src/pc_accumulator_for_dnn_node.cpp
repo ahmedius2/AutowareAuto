@@ -85,8 +85,8 @@ void PCloudAccForDnnComponent::ego_pose_callback(
 		auto tf_res = tf_buffer_->lookupTransform("base_link", "map", tf2::TimePointZero);
     rclcpp::Time t1 = ego_pose->header.stamp, t2 = tf_res.header.stamp;
     float tdiff = (t2-t1).seconds();
-    if(tdiff*1000 > 50){
-  		RCLCPP_WARN(this->get_logger(), "point cloud and tf tdiff is greater than 50 ms: %.1f ms",
+    if(tdiff*1000 > 95){
+      RCLCPP_WARN(this->get_logger(), "point cloud and tf tdiff is greater than 95 ms: %.1f ms",
           tdiff * 1000);
     }
 

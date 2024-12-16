@@ -37,19 +37,20 @@ PCloudAccForDnnComponent::PCloudAccForDnnComponent(const rclcpp::NodeOptions & o
   tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
   pointcloud_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-    "/sensing/lidar/concatenated/pointcloud", rclcpp::SensorDataQoS(),
+   "input/pointcloud", rclcpp::SensorDataQoS(),
     std::bind(&PCloudAccForDnnComponent::pointcloud_callback, this, std::placeholders::_1));
 
   egopose_sub_ = create_subscription<geometry_msgs::msg::PoseStamped>(
+    //"/localization/pose_estimator/pose", 10,
     "/localization/pose_estimator/pose", 10,
     std::bind(&PCloudAccForDnnComponent::ego_pose_callback, this, std::placeholders::_1));
 
   floatarr_pub_ = create_publisher<valo_msgs::msg::Float32MultiArrayStamped>(
-    "dnn_inp_float_arr", 10);
+    "accumulated_pc_as_arr", 10);
 
   if(debug_mode_){
     debug_pc_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
-        "pc_acc_for_dnn_debug_pc", 10);
+        "debug/accumulated_pointcloud", 10);
   }
 }
 

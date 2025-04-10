@@ -131,6 +131,7 @@ private:
   void onExternalEmergencyStopHeartbeat(Heartbeat::ConstSharedPtr msg);
   void onMrmState(MrmState::ConstSharedPtr msg);
 
+  EngageMsg::ConstSharedPtr engage_req_; // use if engage is requested for a future time
   bool is_engaged_;
   bool is_system_emergency_ = false;
   bool is_external_emergency_stop_ = false;

@@ -202,10 +202,23 @@ MultiObjectTracker::MultiObjectTracker(const rclcpp::NodeOptions & node_options)
   debugger_->setObjectChannels(input_names_short);
   published_time_publisher_ =
     std::make_unique<autoware::universe_utils::PublishedTimePublisher>(this);
+
+  stop_watch_ = 
+    std::make_unique<autoware::universe_utils::StopWatch<std::chrono::milliseconds>>();
+  process_time_pub_ = create_publisher<tier4_debug_msgs::msg::Float64Stamped>(
+      "~/exec_time_ms", 10);
+
 }
 
 void MultiObjectTracker::onTrigger()
 {
+
+  auto tp = std::chrono::system_clock::now();
+  rclcpp::Time inp_arrival_sys_time(tp.time_since_epoch().count());
+  if (!publish_timer_) {
+    stop_watch_->tic("processing_time");
+  }
+
   const rclcpp::Time current_time = this->now();
   // get objects from the input manager and run process
   ObjectsList objects_list;
@@ -217,11 +230,20 @@ void MultiObjectTracker::onTrigger()
   if (!publish_timer_) {
     const auto latest_object_time = rclcpp::Time(objects_list.back().second.header.stamp);
     checkAndPublish(latest_object_time);
+    const auto processing_time_ms = stop_watch_->toc("processing_time");
+    tier4_debug_msgs::msg::Float64Stamped time_msg;
+    time_msg.stamp = inp_arrival_sys_time; // input->header.stamp;
+    time_msg.data = processing_time_ms;
+    process_time_pub_->publish(time_msg);
   }
 }
 
 void MultiObjectTracker::onTimer()
 {
+  auto tp = std::chrono::system_clock::now();
+  rclcpp::Time inp_arrival_sys_time(tp.time_since_epoch().count());
+  stop_watch_->tic("processing_time");
+
   const rclcpp::Time current_time = this->now();
 
   // ensure minimum interval: room for the next process(prediction)
@@ -241,6 +263,12 @@ void MultiObjectTracker::onTimer()
 
   // Publish with delay compensation to the current time
   if (should_publish) checkAndPublish(current_time);
+
+  const auto processing_time_ms = stop_watch_->toc("processing_time");
+  tier4_debug_msgs::msg::Float64Stamped time_msg;
+  time_msg.stamp = inp_arrival_sys_time; // input->header.stamp;
+  time_msg.data = processing_time_ms;
+  process_time_pub_->publish(time_msg);
 }
 
 void MultiObjectTracker::onMessage(const ObjectsList & objects_list)

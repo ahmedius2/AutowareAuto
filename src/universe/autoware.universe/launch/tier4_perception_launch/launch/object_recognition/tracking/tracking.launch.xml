@@ -84,6 +84,9 @@
       <let name="detection_enabled_channels" value="['lidar_$(var lidar_detection_model)_validated','detection_by_tracker']" if="$(var use_detection_by_tracker)"/>
       <let name="detection_enabled_channels" value="['lidar_$(var lidar_detection_model)_validated']" unless="$(var use_detection_by_tracker)"/>
     </group>
+    <group scoped="false" if="$(eval '&quot;$(var mode)&quot;==&quot;lidar_dnn_only&quot;')">
+      <let name="detection_enabled_channels" value="['lidar_$(var lidar_detection_model)_validated']"/>
+    </group>
     <group scoped="false" if="$(eval '&quot;$(var mode)&quot;==&quot;radar&quot;')">
       <let name="detection_enabled_channels" value="['radar_far']"/>
     </group>

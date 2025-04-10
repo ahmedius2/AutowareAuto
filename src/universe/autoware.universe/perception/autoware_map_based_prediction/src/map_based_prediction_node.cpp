@@ -876,6 +876,10 @@ MapBasedPredictionNode::MapBasedPredictionNode(const rclcpp::NodeOptions & node_
   // dynamic reconfigure
   set_param_res_ = this->add_on_set_parameters_callback(
     std::bind(&MapBasedPredictionNode::onParam, this, std::placeholders::_1));
+
+
+  process_time_pub_ = create_publisher<tier4_debug_msgs::msg::Float64Stamped>(
+        "~/exec_time_ms", 10);
 }
 
 rcl_interfaces::msg::SetParametersResult MapBasedPredictionNode::onParam(
@@ -969,7 +973,12 @@ void MapBasedPredictionNode::objectsCallback(const TrackedObjects::ConstSharedPt
   std::unique_ptr<ScopedTimeTrack> st_ptr;
   if (time_keeper_) st_ptr = std::make_unique<ScopedTimeTrack>(__func__, *time_keeper_);
 
-  if (stop_watch_ptr_) stop_watch_ptr_->toc("processing_time", true);
+  auto tp = std::chrono::system_clock::now();
+  rclcpp::Time inp_arrival_sys_time(tp.time_since_epoch().count());
+  if (stop_watch_ptr_){
+    stop_watch_ptr_->toc("processing_time", true);
+    stop_watch_ptr_->tic("execution_time");
+  }
 
   // take traffic_signal
   {
@@ -1246,6 +1255,12 @@ void MapBasedPredictionNode::objectsCallback(const TrackedObjects::ConstSharedPt
 
   // Publish Processing Time
   if (stop_watch_ptr_) {
+    const auto exec_time_ms = stop_watch_ptr_->toc("execution_time");
+    tier4_debug_msgs::msg::Float64Stamped time_msg;
+    time_msg.stamp = inp_arrival_sys_time; // input->header.stamp;
+    time_msg.data = exec_time_ms;
+    process_time_pub_->publish(time_msg);
+
     const auto processing_time_ms = stop_watch_ptr_->toc("processing_time", true);
     const auto cyclic_time_ms = stop_watch_ptr_->toc("cyclic_time", true);
     processing_time_publisher_->publish<tier4_debug_msgs::msg::Float64Stamped>(

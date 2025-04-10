@@ -326,11 +326,23 @@ ObstaclePointCloudBasedValidator::ObstaclePointCloudBasedValidator(
   if (enable_debugger) debugger_ = std::make_shared<Debugger>(this);
   published_time_publisher_ =
     std::make_unique<autoware::universe_utils::PublishedTimePublisher>(this);
+
+  stop_watch_ = 
+    std::make_unique<autoware::universe_utils::StopWatch<std::chrono::milliseconds>>();
+  process_time_pub_ = create_publisher<tier4_debug_msgs::msg::Float64Stamped>(
+    "~/exec_time_ms", 10);
+
 }
 void ObstaclePointCloudBasedValidator::onObjectsAndObstaclePointCloud(
   const autoware_perception_msgs::msg::DetectedObjects::ConstSharedPtr & input_objects,
   const sensor_msgs::msg::PointCloud2::ConstSharedPtr & input_obstacle_pointcloud)
 {
+
+  auto tp = std::chrono::system_clock::now();
+  rclcpp::Time msg_arrival_sys_time(tp.time_since_epoch().count());
+
+  stop_watch_->tic("processing_time");
+
   autoware_perception_msgs::msg::DetectedObjects output, removed_objects;
   output.header = input_objects->header;
   removed_objects.header = input_objects->header;
@@ -374,6 +386,12 @@ void ObstaclePointCloudBasedValidator::onObjectsAndObstaclePointCloud(
     debugger_->publishNeighborPointcloud(input_obstacle_pointcloud->header);
     debugger_->publishPointcloudWithinPolygon(input_obstacle_pointcloud->header);
   }
+
+  const auto processing_time_ms = stop_watch_->toc("processing_time");
+  tier4_debug_msgs::msg::Float64Stamped time_msg;
+  time_msg.stamp = msg_arrival_sys_time;
+  time_msg.data = processing_time_ms;
+  process_time_pub_->publish(time_msg);
 
   // Publish processing time info
   const double pipeline_latency =

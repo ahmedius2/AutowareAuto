@@ -19,6 +19,8 @@
 
 #include "autoware/universe_utils/ros/debug_publisher.hpp"
 #include "autoware/universe_utils/ros/published_time_publisher.hpp"
+#include <autoware/universe_utils/system/stop_watch.hpp>
+#include <tier4_debug_msgs/msg/float64_stamped.hpp>
 #include "debugger.hpp"
 
 #include <rclcpp/rclcpp.hpp>
@@ -143,6 +145,7 @@ public:
 
 private:
   rclcpp::Publisher<autoware_perception_msgs::msg::DetectedObjects>::SharedPtr objects_pub_;
+  rclcpp::Publisher<tier4_debug_msgs::msg::Float64Stamped>::SharedPtr process_time_pub_;
   std::unique_ptr<message_filters::Subscriber<autoware_perception_msgs::msg::DetectedObjects>> objects_sub_;
   std::unique_ptr<message_filters::Subscriber<valo_msgs::msg::Float32MultiArrayStamped>> multiarr_sub_;
   message_filters::Subscriber<sensor_msgs::msg::PointCloud2> obstacle_pointcloud_sub_;
@@ -169,6 +172,7 @@ private:
   std::string lidar_detection_model_;
   std::unique_ptr<Validator> validator_;
   std::unique_ptr<autoware::universe_utils::PublishedTimePublisher> published_time_publisher_;
+  std::unique_ptr<autoware::universe_utils::StopWatch<std::chrono::milliseconds>> stop_watch_;
 
 private:
   void onObjectsAndObstaclePointCloud(

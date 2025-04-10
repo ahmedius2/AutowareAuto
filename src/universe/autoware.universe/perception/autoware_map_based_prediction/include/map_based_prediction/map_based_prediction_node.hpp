@@ -38,6 +38,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
+#include <tier4_debug_msgs/msg/float64_stamped.hpp>
 
 #include <lanelet2_core/Forward.h>
 #include <lanelet2_core/LaneletMap.h>
@@ -167,6 +168,7 @@ private:
   // ROS Publisher and Subscriber
   rclcpp::Publisher<PredictedObjects>::SharedPtr pub_objects_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_debug_markers_;
+  rclcpp::Publisher<tier4_debug_msgs::msg::Float64Stamped>::SharedPtr process_time_pub_;
   rclcpp::Subscription<TrackedObjects>::SharedPtr sub_objects_;
   rclcpp::Subscription<LaneletMapBin>::SharedPtr sub_map_;
   autoware::universe_utils::InterProcessPollingSubscriber<TrafficLightGroupArray>

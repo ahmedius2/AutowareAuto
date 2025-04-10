@@ -3,7 +3,9 @@ import datetime
 import os
 import time
 import json
+import queue
 import torch
+import math
 import numpy as np
 from pathlib import Path
 
@@ -15,16 +17,20 @@ import rclpy
 from rclpy.time import Time
 from rclpy.node import Node
 from rclpy.clock import ClockType, Clock
+from rclpy.parameter import Parameter
 from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 from std_msgs.msg import Header, MultiArrayDimension
 from autoware_perception_msgs.msg import DetectedObjects, DetectedObject, ObjectClassification
+from autoware_vehicle_msgs.msg import VelocityReport
 from valo_msgs.msg import Float32MultiArrayStamped
 from torch.profiler import profile, record_function, ProfilerActivity
+from tier4_debug_msgs.msg import Float64Stamped
 #from callback_profile.msg import CallbackProfile
 
 PROFILE = False
-DEBUG = False
+PUB_DEBUG_DETS = False
+DYN_RES = False
 
 # has to be converted to [N, 6]
 def f32_multi_arr_to_tensor(float_arr):
@@ -38,22 +44,28 @@ def f32_multi_arr_to_tensor(float_arr):
 class InferenceNode(Node):
     def __init__(self,  period_sec):
         super().__init__('lidar_objdet_valor')
-        self.system_clock = Clock(clock_type=ClockType.SYSTEM_TIME)
+        self.set_parameters([Parameter('use_sim_time', Parameter.Type.BOOL, True)])
+        self.declare_parameter('model_res_idx', -1)
 
         self.period_sec = period_sec
-        point_cloud_topic = 'accumulated_pc_as_arr'
-        output_topic = 'valor_detected_objs'
-        self.arr_publisher = self.create_publisher(Float32MultiArrayStamped, output_topic, 10)
-        if DEBUG:
-            output_topic = '~/valor_detected_objs_debug'
-            self.det_publisher = self.create_publisher(DetectedObjects, output_topic, 10)
-        self.pc_sub = self.create_subscription(Float32MultiArrayStamped, point_cloud_topic,
-                                               self.pc_callback, 1)
+        self.arr_pub = self.create_publisher(Float32MultiArrayStamped,
+                'valor_detected_objs', 10)
+        self.processing_time_pub = self.create_publisher(Float64Stamped,
+                '~/execution_time_ms', 10)
+        if PUB_DEBUG_DETS:
+            self.det_pub = self.create_publisher(DetectedObjects,
+                    '~/debug/valor_detected_obj', 10)
+        self.pc_sub = self.create_subscription(Float32MultiArrayStamped,
+                'accumulated_pc_as_arr', self.pc_callback, 1)
+        self.velo_sub = self.create_subscription(VelocityReport,
+                '/vehicle/status/velocity_status', self.vel_callback, 1)
 
         self.model_initialized = False
         self.init_model()
         self.model_initialized = True
 
+        self.past_publish_times = np.zeros(10)
+        self.vel_limit = 10 # m/s
         self.sample_counter = 0
 
         # Define the transformation matrix from
@@ -65,6 +77,8 @@ class InferenceNode(Node):
 			[ -0.001,  0.015,  1.000,  2.066],
 			[  0.000,  0.000,  0.000,  1.000]
         ], dtype=torch.float32)
+
+        self.publish_time_mntc = time.monotonic()
 
     def tranform_to_base_link(self, objects):
         # Extract translation and orientation components
@@ -85,14 +99,18 @@ class InferenceNode(Node):
         pth = os.environ["PCDET_PATH"]
         os.chdir(os.path.join(pth, 'tools'))
 
-        def_cfg_file  = "tools/cfgs/nuscenes_models/pillar01_015_02_024_03_valor_awsim.yaml"
+        def_cfg_file  = "tools/cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200_awsim.yaml"
         def_cfg_file  = os.path.join(pth, def_cfg_file)
-        def_ckpt_file = "models/pillar01_015_02_024_03_valor_awsim_epoch60.pth"
+        def_ckpt_file = "models/mural_pillarnet_0100_0128_0200_awsim_e20.pth"
         def_ckpt_file = os.path.join(pth, def_ckpt_file)
 
         cfg_from_yaml_file(def_cfg_file, cfg)
         #if args.set_cfgs is not None:
-        #    cfg_from_list(args.set_cfgs, cfg)
+        set_cfgs = ['MODEL.METHOD', 12,
+            'MODEL.DEADLINE_SEC', 0.100,
+            'MODEL.DENSE_HEAD.NAME', 'CenterHeadInf',
+            'OPTIMIZATION.BATCH_SIZE_PER_GPU', '1']
+        cfg_from_list(set_cfgs, cfg)
 
         logger, test_set = get_dataset(cfg)
 
@@ -105,9 +123,12 @@ class InferenceNode(Node):
         self.dataset = model.dataset
 
         oc = ObjectClassification()
-        cls_names = cfg.CLASS_NAMES
+        cls_names = [str(i) for i in cfg.CLASS_NAMES]
         self.cls_mapping = { cls_names.index(name)+1: oc.__getattribute__(name.upper()) \
                 for name in cls_names }
+
+        #for k, m in self.cls_mapping.items():
+        #    self.get_logger().warn(str(k) + ":" + str(m))
 
         print('[IS] Calibrating...')
         torch.cuda.cudart().cudaProfilerStop()
@@ -125,21 +146,39 @@ class InferenceNode(Node):
         dummy_tensor = torch.empty(1024**3, device='cuda')
         torch.cuda.synchronize()
         del dummy_tensor
+        model.res_idx = 0 # initial resolution
+
+    def vel_callback(self, vel_report):
+        if DYN_RES:
+            longtd_vel = vel_report.longitudinal_velocity
+            lateral_vel = vel_report.lateral_velocity
+
+            vel = math.sqrt(longtd_vel**2 + lateral_vel**2)
+
+            num_res = 5
+            self.model.res_idx = round((vel / self.vel_limit) * num_res)
+            if self.model.res_idx >= num_res:
+                self.model.res_idx = num_res - 1
 
     def pc_callback(self, multi_arr):
         if not self.model_initialized:
             return
 
+        ridx = self.get_parameter('model_res_idx').value
+        if ridx >= 0 and ridx < 5:
+            self.model.res_idx = ridx
+
         with record_function("inference"):
             model = self.model
             start_time = time.time()
+            start_time_stamp = Time(nanoseconds=time.time_ns()).to_msg()
+            start_time_mntc = time.monotonic()
+
             model.measure_time_start('End-to-end')
             model.measure_time_start('PreProcess')
             #deadline_sec_override, reset = model.initialize(sample_token)
 
             with torch.no_grad():
-                model.res_idx = 3
-
                 tensor = f32_multi_arr_to_tensor(multi_arr).cuda()
                 # the reference frame of awsim is baselink, so we need to change that to
                 # lidar by decreasing z
@@ -149,6 +188,8 @@ class InferenceNode(Node):
                     'points': torch.cat((batch_id.unsqueeze(-1), tensor), dim=1)
                 }
                 torch.cuda.synchronize() # remove me
+
+                # Up to here, avege time spent is 3ms
 
                 batch_dict['batch_size'] = 1
                 batch_dict['scene_reset'] = False
@@ -168,21 +209,39 @@ class InferenceNode(Node):
             model.latest_batch_dict = {k: batch_dict[k] for k in \
                     ['final_box_dicts']}
 
-            torch.cuda.synchronize()
             model.measure_time_end('PostProcess')
             model.measure_time_end('End-to-end')
 
+            torch.cuda.synchronize()
             model.calc_elapsed_times() 
             model.last_elapsed_time_musec = int(model._time_dict['End-to-end'][-1] * 1000)
 
             pred_dict = batch_dict['final_box_dicts'][0]
             pred_dict['pred_boxes'] = self.tranform_to_base_link(pred_dict['pred_boxes'])
 
-            self.publish_dets(pred_dict, multi_arr.header.stamp)
-            finish_time = time.time()
-            #print(batch_dict['final_box_dicts'][0]['pred_labels'].size(), (finish_time -start_time)*1e3, 'ms')
+            pc_stamp = multi_arr.header.stamp
+            self.publish_dets(pred_dict, pc_stamp)
+            end_time_mntc = time.monotonic()
+            time_since_last_publish = end_time_mntc - self.publish_time_mntc
+            self.publish_time_mntc = end_time_mntc
+
+            processing_time_ms = (end_time_mntc - start_time_mntc) * 1e3
+            time_msg = Float64Stamped() 
+            time_msg.stamp = start_time_stamp
+            time_msg.data = processing_time_ms
+            self.processing_time_pub.publish(time_msg)
+
+            # NOTE The following appears to be not working well
+            #cur_time = self.get_clock().now()
+            #pipeline_time = cur_time - Time.from_msg(pc_stamp)
+            #time_msg.data = pipeline_time.nanoseconds * 1e-6
+            #self.pipeline_time_pub.publish(time_msg)
+
+        idx = self.sample_counter % len(self.past_publish_times) 
+        self.past_publish_times[idx] = time_since_last_publish
         self.sample_counter += 1
-            #finishovski_time = time.time()
+        #if self.sample_counter % 10 == 0:
+        #    print('VALOR publish latency:', np.mean(self.past_publish_times) * 1000, 'ms')
 
         if self.sample_counter % 100 == 0:
             model.print_time_stats()
@@ -191,14 +250,12 @@ class InferenceNode(Node):
 
     # This func takes less than 1 ms, ~0.6 ms
     def publish_dets(self, pred_dict, stamp):
-        if pred_dict['pred_labels'].size(0) > 0:
-            float_arr = pred_dict_to_f32_multi_arr(pred_dict, stamp)
-            self.arr_publisher.publish(float_arr)
-            if DEBUG:
-                det_objs = f32_multi_arr_to_detected_objs(float_arr, self.cls_mapping)
-                self.det_publisher.publish(det_objs)
-        else:
-            print('Not publishing since no objects were detected...')
+        # publish even if its empty
+        float_arr = pred_dict_to_f32_multi_arr(pred_dict, stamp)
+        self.arr_pub.publish(float_arr)
+        if PUB_DEBUG_DETS:
+            det_objs = f32_multi_arr_to_detected_objs(float_arr, self.cls_mapping)
+            self.det_pub.publish(det_objs)
 
 def RunInferenceNode(period_sec):
     rclpy.init(args=None)

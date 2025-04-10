@@ -47,7 +47,7 @@ const char * getGateModeName(const GateMode::_data_type & gate_mode)
 }  // namespace
 
 VehicleCmdGate::VehicleCmdGate(const rclcpp::NodeOptions & node_options)
-: Node("vehicle_cmd_gate", node_options), is_engaged_(false), updater_(this)
+: Node("vehicle_cmd_gate", node_options), engage_req_(nullptr), is_engaged_(false), updater_(this)
 {
   using std::placeholders::_1;
   using std::placeholders::_2;
@@ -375,6 +375,15 @@ T VehicleCmdGate::getContinuousTopic(
 
 void VehicleCmdGate::onTimer()
 {
+  if(engage_req_){
+    auto cur_ts = this->get_clock()->now();
+    rclcpp::Time engage_ts = engage_req_->stamp;
+    if(cur_ts > engage_ts){
+      is_engaged_ = engage_req_->engage;
+      engage_req_ = nullptr;
+    } 
+  }
+
   // Subscriber for auto
   const auto msg_auto_command_turn_indicator = auto_turn_indicator_cmd_sub_.takeData();
   if (msg_auto_command_turn_indicator)
@@ -752,7 +761,7 @@ void VehicleCmdGate::onGateMode(GateMode::ConstSharedPtr msg)
 
 void VehicleCmdGate::onEngage(EngageMsg::ConstSharedPtr msg)
 {
-  is_engaged_ = msg->engage;
+  engage_req_ = msg;
 }
 
 void VehicleCmdGate::onEngageService(

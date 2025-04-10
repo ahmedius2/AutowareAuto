@@ -47,12 +47,21 @@ namespace pc_acc_for_dnn
       debug_pc_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
           "debug/accumulated_pointcloud", 10);
     }
+
+    stop_watch_ = 
+      std::make_unique<autoware::universe_utils::StopWatch<std::chrono::milliseconds>>();
+    process_time_pub_ = create_publisher<tier4_debug_msgs::msg::Float64Stamped>(
+        "~/exec_time_ms", 10);
+   //pipeline_time_pub_ = create_publisher<tier4_debug_msgs::msg::Float64Stamped>(
+   //     "~/debug/pipeline_time_ms", 10);
   }
 
   void PCloudAccForDnnComponent::pointcloud_callback(
       const sensor_msgs::msg::PointCloud2::SharedPtr input)
   {
-    auto start = std::chrono::steady_clock::now();
+    auto tp = std::chrono::system_clock::now();
+    rclcpp::Time pc_arrival_sys_time(tp.time_since_epoch().count());
+    stop_watch_->tic("processing_time");
     pcloud_queue_.push_back(input);
 
     // Remove point clouds that is beyond time lim
@@ -235,12 +244,20 @@ namespace pc_acc_for_dnn
 
     floatarr_pub_->publish(multarr);
 
-    auto end = std::chrono::steady_clock::now();
-    std::chrono::duration<double, std::milli> duration = end - start;
+    const auto processing_time_ms = stop_watch_->toc("processing_time");
+    tier4_debug_msgs::msg::Float64Stamped time_msg;
+    time_msg.stamp = pc_arrival_sys_time; // input->header.stamp;
+    time_msg.data = processing_time_ms;
+    process_time_pub_->publish(time_msg);
+
+    //auto cur_time = this->get_clock()->now();
+    //time_msg.data = (cur_time - most_recent_pc_time).nanoseconds() * 1e-6;
+    //pipeline_time_pub_->publish(time_msg);
+
     if(debug_mode_){
       debug_pc_pub_->publish(debug_pc);
       RCLCPP_INFO(this->get_logger(), "Published %d points from %d point clouds. Took %.1f ms.",
-          point_counter, pairs.size(), duration.count());
+          point_counter, pairs.size(), processing_time_ms);
     }
   }
 }  // namespace pc_acc_for_dnn

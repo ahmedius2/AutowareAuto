@@ -4,7 +4,7 @@
   <let name="ns" value="/perception/object_recognition/detection"/>
 
   <!-- Pipeline junctions -->
-  <arg name="mode" description="options: `camera_lidar_radar_fusion`, `camera_lidar_fusion`, `lidar_radar_fusion`, `lidar` or `radar`"/>
+  <arg name="mode" description="options: `camera_lidar_radar_fusion`, `camera_lidar_fusion`, `lidar_radar_fusion`, `lidar`, `radar` or 'lidar_dnn_only'"/>
   <arg name="lidar_detection_model" description="options: `transfusion`, `centerpoint`, `apollo`, `pointpainting`, `clustering`"/>
   <arg name="use_object_filter" description="use object filter"/>
   <arg name="objects_filter_method" description="options: `lanelet_filter` or `position_filter`"/>
@@ -117,6 +117,14 @@
     <let name="switch/detector/lidar_rule" value="true"/>
     <let name="switch/filter/lidar_object" value="true" if="$(var use_multi_channel_tracker_merger)"/>
     <let name="switch/merger/lidar" value="true" unless="$(var use_multi_channel_tracker_merger)"/>
+  </group>
+  <group scoped="false" if="$(eval '&quot;$(var mode)&quot;==&quot;lidar_dnn_only&quot;')">
+    <let name="switch/detector/tracker_based" value="false"/>
+    <let name="switch/filter/pointcloud" value="true"/>
+    <let name="switch/detector/lidar_dnn" value="true"/>
+    <let name="switch/detector/lidar_rule" value="false"/>
+    <let name="switch/filter/lidar_object" value="true"/>
+    <let name="lidar_object_filter/output/objects" value="$(var output/objects)"/>
   </group>
   <group scoped="false" if="$(eval '&quot;$(var mode)&quot;==&quot;radar&quot;')">
     <let name="switch/detector/radar" value="true" if="$(var use_multi_channel_tracker_merger)"/>

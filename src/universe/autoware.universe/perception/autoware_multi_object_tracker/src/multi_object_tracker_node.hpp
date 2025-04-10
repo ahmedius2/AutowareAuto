@@ -30,6 +30,8 @@
 #include "autoware_perception_msgs/msg/detected_objects.hpp"
 #include "autoware_perception_msgs/msg/tracked_objects.hpp"
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <autoware/universe_utils/system/stop_watch.hpp>
+#include <tier4_debug_msgs/msg/float64_stamped.hpp>
 
 #include <tf2/LinearMath/Transform.h>
 #include <tf2/convert.h>
@@ -74,6 +76,8 @@ private:
   // debugger
   std::unique_ptr<TrackerDebugger> debugger_;
   std::unique_ptr<autoware::universe_utils::PublishedTimePublisher> published_time_publisher_;
+  rclcpp::Publisher<tier4_debug_msgs::msg::Float64Stamped>::SharedPtr process_time_pub_;
+  std::unique_ptr<autoware::universe_utils::StopWatch<std::chrono::milliseconds>> stop_watch_;
 
   // publish timer
   rclcpp::TimerBase::SharedPtr publish_timer_;

@@ -16,6 +16,8 @@ find_package(valo_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(autoware_universe_utils REQUIRED)
+find_package(tier4_debug_msgs REQUIRED)
 #find_package(pcl_conversions REQUIRED)
 
 if(BUILD_TESTING)
@@ -39,7 +41,7 @@ target_include_directories(pc_accumulator_for_dnn
   #  ${PCL_INCLUDE_DIRS})
   target_link_libraries(pc_accumulator_for_dnn Eigen3::Eigen) #${PCL_LIBRARIES})
 ament_target_dependencies(pc_accumulator_for_dnn rclcpp rclcpp_components sensor_msgs 
-  geometry_msgs valo_msgs tf2 tf2_ros) # pcl_ros pcl_conversions)
+  geometry_msgs valo_msgs tf2 tf2_ros autoware_universe_utils tier4_debug_msgs) # pcl_ros pcl_conversions)
 rclcpp_components_register_nodes(pc_accumulator_for_dnn "pc_acc_for_dnn::PCloudAccForDnnComponent")
 
 # Install executable

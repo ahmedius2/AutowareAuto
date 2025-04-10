@@ -19,6 +19,7 @@
   <arg name="sensing" default="true" description="launch sensing"/>
   <arg name="localization" default="true" description="launch localization"/>
   <arg name="perception" default="true" description="launch perception"/>
+  <arg name="perception_mode" default="lidar"/>
   <arg name="planning" default="true" description="launch planning"/>
   <arg name="control" default="true" description="launch control"/>
   <!-- Map -->
@@ -41,6 +42,7 @@
     <include file="$(find-pkg-share autoware_carla_interface)/autoware_carla_interface.launch.xml"/>
   </group>
 
+
   <group scoped="false">
     <include file="$(find-pkg-share autoware_launch)/launch/autoware.launch.xml">
       <!-- Common -->
@@ -56,6 +58,7 @@
       <arg name="launch_sensing" value="$(var sensing)"/>
       <arg name="launch_localization" value="$(var localization)"/>
       <arg name="launch_perception" value="$(var perception)"/>
+      <arg name="perception_mode" value="$(var perception_mode)"/>
       <arg name="launch_planning" value="$(var planning)"/>
       <arg name="launch_control" value="$(var control)"/>
       <!-- Global parameters -->

@@ -7,6 +7,11 @@
   <maintainer email="ahmedius2@gmail.com">humble</maintainer>
   <license>Apache-2.0</license>
 
+  <depend>valo_msgs</depend>
+  <depend>autoware_perception_msgs</depend>
+  <depend>autoware_vehicle_msgs</depend>
+  <depend>tier4_debug_msgs</depend>
+
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>

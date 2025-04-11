@@ -30,7 +30,7 @@ namespace pc_acc_for_dnn
     : Node("PointcloudAccumulatorForDNN", options)
   {
     accumulation_time_sec_ = declare_parameter<double>("accumulation_time_sec", 0.5);
-    point_cloud_buf_sz_ = declare_parameter<int>("pcloud_queue_size", 10);
+    point_cloud_buf_sz_ = declare_parameter<int>("pcloud_queue_size", 3);
     debug_mode_ = declare_parameter<bool>("debug", false);
 
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());

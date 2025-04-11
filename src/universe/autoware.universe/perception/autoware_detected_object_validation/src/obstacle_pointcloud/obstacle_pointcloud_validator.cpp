@@ -409,7 +409,7 @@ autoware_perception_msgs::msg::DetectedObjects::SharedPtr ObstaclePointCloudBase
 	//11 elems: x y z dimx dimy dimz yaw velx vely score label
   //assert(input_objects_raw_msgs->array.layout.dim[1] == 11);
   using Label = autoware_perception_msgs::msg::ObjectClassification;
-	const std::array<int, 6> cls_mapping = {-1, Label::CAR, Label::TRUCK, Label::BUS, Label::BICYCLE, Label::PEDESTRIAN}; // Is it correct?
+	const std::array<int, 6> cls_mapping = {-1, Label::CAR, Label::TRUCK, Label::BUS, Label::PEDESTRIAN};
 
 	auto detected_objs = std::make_shared<autoware_perception_msgs::msg::DetectedObjects>();
 	detected_objs->header = input_objects_raw_msgs->header;

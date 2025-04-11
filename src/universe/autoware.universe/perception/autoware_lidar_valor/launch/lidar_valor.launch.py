@@ -3,10 +3,19 @@ from launch import LaunchDescription
 from launch_ros.actions import LoadComposableNodes, ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration, PythonExpression, EnvironmentVariable
 from launch.conditions import IfCondition, UnlessCondition
 
+import os
+
 def generate_launch_description():
+    dont_launch_valor_ev = EnvironmentVariable('DONT_LAUNCH_VALOR', default_value='false')
+    launch_arg = DeclareLaunchArgument(
+        'dont_launch_valor',
+        default_value=dont_launch_valor_ev,
+        description='Set to true to not launch the nodes'
+    )
+
     input_pointcloud_arg = DeclareLaunchArgument(
         'input/pointcloud', 
         default_value='/sensing/lidar/pointcloud', 
@@ -20,7 +29,7 @@ def generate_launch_description():
     use_pointcloud_container_arg = DeclareLaunchArgument(
         'use_pointcloud_container', 
         default_value='false', 
-        description='Whether to use a pointcloud container'
+        description='Whether to use a pointcloud container that already exist'
     )
     pointcloud_container_name_arg = DeclareLaunchArgument(
         'pointcloud_container_name', 
@@ -33,18 +42,26 @@ def generate_launch_description():
         description='Enable debug mode'
     )
 
+    dont_launch_valor = LaunchConfiguration('dont_launch_valor')
     input_pointcloud = LaunchConfiguration('input/pointcloud')
     output_objects = LaunchConfiguration('output/objects')
-    use_pointcloud_container = LaunchConfiguration('use_pointcloud_container')
+    use_existing_pointcloud_container = LaunchConfiguration('use_pointcloud_container')
     pointcloud_container_name = LaunchConfiguration('pointcloud_container_name')
     debug = LaunchConfiguration('debug')
 
+    combined_condition = IfCondition(
+        PythonExpression([
+            "'", use_existing_pointcloud_container, "' == 'false' and '",
+            dont_launch_valor, "' == 'false'"
+        ])
+    )
+
     container = ComposableNodeContainer(
-        condition=UnlessCondition(use_pointcloud_container),
         name='pc_acc_container',              # Name of the container
         namespace='',
         package='rclcpp_components',
         executable='component_container',
+        condition=combined_condition,
     )
 
     # Define the composable node to load
@@ -55,26 +72,31 @@ def generate_launch_description():
         parameters=[{'debug': debug}],  # Optional parameters
         remappings=[('input/pointcloud', input_pointcloud),],
         extra_arguments=[{'use_intra_process_comms': True}],
+        condition=IfCondition(PythonExpression(["'", dont_launch_valor, "' == 'false'"]))
     )
 
     target_container = PythonExpression([
-      "'", pointcloud_container_name, "' if '", use_pointcloud_container, "' == 'true' else 'pc_acc_container'"
+      "'", pointcloud_container_name, "' if '", use_existing_pointcloud_container,
+      "' == 'true' else 'pc_acc_container'"
     ])
 
     load_comp_node = LoadComposableNodes(
         target_container=target_container,
         composable_node_descriptions=[composable_node],
+        condition=IfCondition(PythonExpression(["'", dont_launch_valor, "' == 'false'"]))
     )
 
     lidar_dnn_node = Node(
         package='autoware_lidar_valor',
         executable='lidar_objdet_valor',
         name='lidar_objdet_valor_dnn',
-        remappings=[('valor_detected_objs', output_objects)]
+        remappings=[('valor_detected_objs', output_objects)],
+        condition=IfCondition(PythonExpression(["'", dont_launch_valor, "' == 'false'"]))
     )
 
     # Launch description
     return LaunchDescription([
+        launch_arg,
         input_pointcloud_arg,
         output_objects_arg,
         use_pointcloud_container_arg,

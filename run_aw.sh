@@ -1,21 +1,32 @@
 #!/bin/bash
 set -m  # Ensure the script uses job control
-set -x
+
+export PMODE="pmode_0002"
+#export LIDAR_DNN_MODEL="MURAL_Pillarnet"
+#export LIDAR_DNN_MODEL="Pillarnet0100"
+export LIDAR_DNN_DELEGATE_GT=0 # The model won't matter, NOTE that prediction is not working well
+#export FIXED_RES_IDX=1
+#unset FIXED_RES_IDX
+export IGNORE_DL_MISS=0 # used by lidar dnn, make it 0 when using mural!
+export ASSUME_ALL_TLIGHTS_ARE_GREEN=1
+
+. cleanup_shm.sh
 
 printf "Make sure AWSIM is running before executing this script!\n"
 
 run_aw()
 {
   AW_PARAMS="vehicle_model:=sample_vehicle sensor_model:=awsim_sensor_kit
-    map_path:=/home/humble/shared/autoware/src/additional/shinjuku_map/map
-    rviz:=false perception_mode:=lidar_dnn_only"
+    map_path:=/home/a249s197/work/AutowareAuto/src/additional/shinjuku_map/map
+    rviz:=true perception_mode:=lidar_dnn_only use_sim_time:=true"
 
 #  AW_PARAMS="$AW_PARAMS planning:=false control:=false"
 
   rm -rf ~/.ros/log/* aw_logs.txt
-  chrt -r 90 ros2 launch autoware_launch e2e_simulator.launch.xml $AW_PARAMS | tee aw_logs.txt &
+  #DONT_LAUNCH_VALOR="true" 
+  nice --20 taskset 00ff ros2 launch autoware_launch e2e_simulator.launch.xml $AW_PARAMS | tee aw_logs.txt &
   ros2_pid=$!  # Capture the PID of the ros2 launch process
-  ros2_pgid=$(ps -o pgid= -p $ros2_pid | grep -o '[0-9]*')
+  aw_pgid=$(ps -o pgid= -p $ros2_pid | grep -o '[0-9]*')
   echo "autoware started with PID $ros2_pid and PGID $ros2_pgid"
 }
 
@@ -26,17 +37,27 @@ run_bag_record()
     /awsim/object_recognition/matched_objects
     /perception/object_recognition/objects
     /vehicle/status/velocity_status
+    /control/command/control_cmd
+    /control/command/emergency_cmd
     /system/operation_mode/state
     /perception/object_recognition/detection/obstacle_pointcloud_based_validator_node/exec_time_ms
-    /perception/object_recognition/detection/valor/lidar_objdet_valor_dnn/execution_time_ms
     /perception/object_recognition/detection/valor/pc_acc_for_dnn_node/exec_time_ms
+    /perception/object_recognition/detection/valor/lidar_objdet_valor_dnn/exec_time_ms
     /perception/object_recognition/prediction/map_based_prediction/exec_time_ms
-    /perception/object_recognition/tracking/multi_object_tracker/exec_time_ms"
+    /perception/object_recognition/tracking/multi_object_tracker/exec_time_ms
+    /perception/object_recognition/detection/valor/lidar_objdet_valor_dnn/selected_res_idx
+    /awsim/object_distances
+    /control/autonomous_emergency_braking/info/markers
+    /awsim/trigger_events"
+
   #/perception/object_recognition/detection/objects
   #/awsim/ground_truth/perception/object_recognition/detection/objects
-  chrt -r 90 ros2 bag record -o awsim_exp_rosbag2 $TOPICS < /dev/null &
+  TARGET_DIR=bags/$LIDAR_DNN_MODEL
+  mkdir -p $TARGET_DIR
+  rm -rf $TARGET_DIR/exp"$1"
+  nice --20 taskset 00ff ros2 bag record -o $TARGET_DIR/exp"$1" $TOPICS < /dev/null &
   ros2_pid=$!  # Capture the PID of the ros2 launch process
-  ros2_pgid=$(ps -o pgid= -p $ros2_pid | grep -o '[0-9]*')
+  rosbag_pgid=$(ps -o pgid= -p $ros2_pid | grep -o '[0-9]*')
 }
 
 send_goal_pose()
@@ -44,51 +65,65 @@ send_goal_pose()
   printf "*********************************************************************\n"
   printf "************************ SENDING GOAL POSE **************************\n"
   printf "*********************************************************************\n"
-  chrt -f 91 ros2 topic pub -1 /planning/mission_planning/goal geometry_msgs/PoseStamped "{
+  ros2 topic pub -1 /planning/mission_planning/goal geometry_msgs/PoseStamped "{
       header: {
           stamp: {sec: 0, nanosec: 0},
           frame_id: 'map'
       },
       pose: {
-          position: {x: 81562.796875, y: 50591.6171875, z: 0},
-          orientation: {x: 0, y: 0, z: 0.08980559531591707, w: 0.9959593139531121}
+          position: {x: $1, y: $2, z: 0},
+          orientation: {x: 0, y: 0, z: $3, w: $4}
       }
   }"
-#          position: {x: 81376.3, y: 50128.1 , z: 0},
-#          orientation: {x: 0, y: 0, z: 0.76063, w: 0.649186}
 }
 
-#perception evaluator config file:
-#ros2 launch perception_online_evaluator perception_online_evaluator.launch.xml config_file_path:=/home/humble/shared/AutowareAuto/src/universe/autoware.universe/evaluator/perception_online_evaluator/param/perception_online_evaluator.awsim.yaml
-
+source_ros2
 run_aw
 AW_PGID=$ros2_pgid
 
 # Reset the simulation
-chrt -f 91 ros2 topic pub -1 /awsim/traffic_reset std_msgs/msg/Header "{frame_id: 'reload'}"
+ros2 topic pub -1 /awsim/traffic_reset std_msgs/msg/Header "{frame_id: 'reload'}"
 
 # wait for autoware to initialize, it should be done one the message comes
-chrt -r 91 ros2 topic echo /perception/object_recognition/detection/objects \
-  autoware_perception_msgs/msg/DetectedObjects --once
+#ros2 topic echo /perception/object_recognition/detection/objects \
+#  autoware_perception_msgs/msg/DetectedObjects --once
+sleep 60 # wait for autoware to initialize
 
-send_goal_pose 
-sleep 20 # wait for planning
+#send_goal_pose 81597.9 50207.1 0.0600405 0.998196 # end to end
+run_bag_record $1
+printf "Sending goal pose 1\n"
+send_goal_pose 81403.1 49968.5 0.758414 0.651773 # after crowded area
+sleep 2
+python scripts/reset_and_engage.py engage 2
+sleep 10 # this might be needed
+python scripts/reset_and_engage.py waitstop
 
-chrt -r 91 python scripts/reset_and_engage.py # syncronizes to be done in future
+printf "Sending goal pose 2\n"
+send_goal_pose 81400.1 50170.6 0.068659 0.99764 # after truck
+sleep 2
+python scripts/reset_and_engage.py engage 2
+sleep 10
+python scripts/reset_and_engage.py waitstop
 
-run_bag_record
-RECORD_PGID=$ros2_pgid
+printf "Sending goal pose 3\n"
+send_goal_pose 81597.9 50207.1 0.0600405 0.998196 # after jaycar (final)
+sleep 2
+python scripts/reset_and_engage.py engage 2
+sleep 10
+python scripts/reset_and_engage.py waitstop
 
-set +x
 
-# if the mode field of /api/operation_mode/state becomes 1, it reached the destination 
-#sleep 360
-#chrt -91 kill -SIGINT -$RECORD_PGID
-#chrt -91 kill -SIGINT -$AW_PGID
 
-# wait pid?
-#sleep 20
-#printf "Done!"
+# stop bag recorder and aw
+kill -SIGINT -$rosbag_pgid
+sleep 5
+kill -SIGINT -$aw_pgid
+sleep 10
 
-#KILL:
+kill %1
+kill %2
+kill %3
+kill %4
+
+#KILLALL:
 #ps -ef | grep -i ros | awk {'print $2'} | xargs chrt -r 91 kill -9

@@ -152,6 +152,7 @@ private:
   std::unique_ptr<autoware::universe_utils::DebugPublisher> debug_publisher_{nullptr};
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
+  bool inp_objs_are_gt_;
 
   typedef message_filters::sync_policies::ApproximateTime<
     autoware_perception_msgs::msg::DetectedObjects, sensor_msgs::msg::PointCloud2>

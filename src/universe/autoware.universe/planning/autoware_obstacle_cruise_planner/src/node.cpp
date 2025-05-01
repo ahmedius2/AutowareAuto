@@ -598,6 +598,9 @@ void ObstacleCruisePlannerNode::onTrajectory(const Trajectory::ConstSharedPtr ms
       concatenate(slow_down_obstacles, slow_down_object_obstacles);
     }
     if (pointcloud_ptr) {
+
+      RCLCPP_WARN(this->get_logger(), "CRUISE PLANNER IS UTILIZING POINT CLOUD!");
+
       const auto target_obstacles =
         convertToObstacles(ego_odom, *pointcloud_ptr, traj_points, msg->header);
 

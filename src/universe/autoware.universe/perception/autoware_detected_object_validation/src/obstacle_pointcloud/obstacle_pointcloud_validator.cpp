@@ -29,6 +29,8 @@
 
 #include <Eigen/Core>
 #include <Eigen/Geometry>
+#include <cstdlib>
+#include <string>
 
 namespace autoware::detected_object_validation
 {
@@ -296,7 +298,10 @@ ObstaclePointCloudBasedValidator::ObstaclePointCloudBasedValidator(
   using std::placeholders::_1;
   using std::placeholders::_2;
 
-  if(lidar_detection_model_ == "valor"){
+  const char* env_str = std::getenv("LIDAR_DNN_DELEGATE_GT");
+  inp_objs_are_gt_ = (env_str != nullptr && std::stoi(env_str) > 0);
+
+  if(lidar_detection_model_ == "valor" && !inp_objs_are_gt_){
     multiarr_sub_ = std::make_unique<message_filters::Subscriber<valo_msgs::msg::Float32MultiArrayStamped>>(
         this, "~/input/detected_objects", rclcpp::QoS{1}.get_rmw_qos_profile());
     sync_multiarr_ = std::make_unique<SyncMultiArr>(SyncPolicyMultiArr(10), *multiarr_sub_, obstacle_pointcloud_sub_);
@@ -337,6 +342,10 @@ void ObstaclePointCloudBasedValidator::onObjectsAndObstaclePointCloud(
   const autoware_perception_msgs::msg::DetectedObjects::ConstSharedPtr & input_objects,
   const sensor_msgs::msg::PointCloud2::ConstSharedPtr & input_obstacle_pointcloud)
 {
+  if(inp_objs_are_gt_){
+    objects_pub_->publish(*input_objects);
+    return;
+  }
 
   auto tp = std::chrono::system_clock::now();
   rclcpp::Time msg_arrival_sys_time(tp.time_since_epoch().count());

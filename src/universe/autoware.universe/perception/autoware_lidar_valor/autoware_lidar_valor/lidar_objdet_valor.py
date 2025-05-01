@@ -1,13 +1,19 @@
 import argparse
 import datetime
 import os
+import mmap
+import posix_ipc
+import struct
 import time
 import json
 import queue
 import torch
 import math
 import numpy as np
-from pathlib import Path
+#from pathlib import Path
+import sys
+
+sys.path.insert(0, '/storage/ahmet/Anytime-Lidar')
 
 from pcdet.utils.ros2_utils import get_dataset, pred_dict_to_f32_multi_arr, f32_multi_arr_to_detected_objs
 from pcdet.config import cfg, cfg_from_list, cfg_from_yaml_file, log_config_to_file
@@ -19,18 +25,25 @@ from rclpy.node import Node
 from rclpy.clock import ClockType, Clock
 from rclpy.parameter import Parameter
 from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
-from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSDurabilityPolicy, QoSHistoryPolicy
 from std_msgs.msg import Header, MultiArrayDimension
 from autoware_perception_msgs.msg import DetectedObjects, DetectedObject, ObjectClassification
 from autoware_vehicle_msgs.msg import VelocityReport
 from valo_msgs.msg import Float32MultiArrayStamped
 from torch.profiler import profile, record_function, ProfilerActivity
-from tier4_debug_msgs.msg import Float64Stamped
+from tier4_debug_msgs.msg import Float64Stamped, Int64Stamped
 #from callback_profile.msg import CallbackProfile
 
+# NOTE, set LIDAR_DNN_MODEL env variable
 PROFILE = False
 PUB_DEBUG_DETS = False
 DYN_RES = False
+SIM_EXEC_TIME = True
+
+def inv_deadline_mapping(value, in_min=0, in_max=12, dl_min=93, dl_max=200):
+    dl_range = (dl_max - dl_min)
+    in_range = (in_max - in_min)
+    return dl_max - value / in_range * dl_range
 
 # has to be converted to [N, 6]
 def f32_multi_arr_to_tensor(float_arr):
@@ -47,16 +60,38 @@ class InferenceNode(Node):
         self.set_parameters([Parameter('use_sim_time', Parameter.Type.BOOL, True)])
         self.declare_parameter('model_res_idx', -1)
 
+        sensor_qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            durability=QoSDurabilityPolicy.VOLATILE,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1  # Keep only the latest message
+        )
+
+        self.delegate_gt = int(os.environ.get("LIDAR_DNN_DELEGATE_GT", 0)) > 0
+
         self.period_sec = period_sec
+        self.mutex = None # for shared mem
+
+        self.pc_sub = self.create_subscription(Header,
+                'accumulated_pc_as_arr', self.pc_callback, qos_profile=sensor_qos)
+        if self.delegate_gt:
+            self.latest_gt_queue = list()
+            self.det_pub = self.create_publisher(DetectedObjects,
+                    'valor_detected_objs', 10)
+            self.gt_sub = self.create_subscription(DetectedObjects,
+                    '/awsim/ground_truth/perception/object_recognition/detection/objects',
+                    self.gt_callback, qos_profile=sensor_qos)
+            return
+
         self.arr_pub = self.create_publisher(Float32MultiArrayStamped,
                 'valor_detected_objs', 10)
         self.processing_time_pub = self.create_publisher(Float64Stamped,
-                '~/execution_time_ms', 10)
+                '~/exec_time_ms', 10)
+        self.res_idx_pub = self.create_publisher(Int64Stamped,
+                '~/selected_res_idx', 10)
         if PUB_DEBUG_DETS:
             self.det_pub = self.create_publisher(DetectedObjects,
                     '~/debug/valor_detected_obj', 10)
-        self.pc_sub = self.create_subscription(Float32MultiArrayStamped,
-                'accumulated_pc_as_arr', self.pc_callback, 1)
         self.velo_sub = self.create_subscription(VelocityReport,
                 '/vehicle/status/velocity_status', self.vel_callback, 1)
 
@@ -65,7 +100,7 @@ class InferenceNode(Node):
         self.model_initialized = True
 
         self.past_publish_times = np.zeros(10)
-        self.vel_limit = 10 # m/s
+        self.vel_limit = 12 # m/s
         self.sample_counter = 0
 
         # Define the transformation matrix from
@@ -80,7 +115,34 @@ class InferenceNode(Node):
 
         self.publish_time_mntc = time.monotonic()
 
-    def tranform_to_base_link(self, objects):
+        self.shm_attached = False
+
+    def gt_callback(self, gt_objects):
+        self.latest_gt_queue.append(gt_objects)
+        if len(self.latest_gt_queue) > 20:
+            self.latest_gt_queue.pop(0)
+
+    def attach_to_shm(self):
+        shm_name = "/valor_pointcloud_data"
+        num_fields = 4 # xyzt
+        data_size =  500000 * num_fields * 4 # assuming float is 4 bytes
+
+        self.shm_fd = os.open(f"/dev/shm{shm_name}", os.O_RDONLY)
+        self.shared_pc_data = mmap.mmap(self.shm_fd, data_size, mmap.MAP_SHARED, mmap.PROT_READ)
+
+        # Initialize in your node
+        mutex_name = "/valor_data_mutex"
+        self.mutex = posix_ipc.Semaphore(mutex_name)
+
+        self.context.on_shutdown(self.on_shutdown_cb)
+
+    def on_shutdown_cb(self):
+        if self.mutex is not None:
+            self.mutex.close()
+            self.shared_pc_data.close()
+            os.close(self.shm_fd)
+
+    def transform_to_base_link(self, objects):
         # Extract translation and orientation components
         translations = objects[:, :3]  # [x, y, z]
 
@@ -99,15 +161,34 @@ class InferenceNode(Node):
         pth = os.environ["PCDET_PATH"]
         os.chdir(os.path.join(pth, 'tools'))
 
-        def_cfg_file  = "tools/cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200_awsim.yaml"
+        chosen_model = os.environ.get("LIDAR_DNN_MODEL", "MURAL_Pillarnet")
+
+        if chosen_model == "Pillarnet0100":
+            def_cfg_file  = "tools/cfgs/nuscenes_models/pillarnet0100_awsim.yaml"
+            def_ckpt_file = "models/pillarnet0100_awsim_e20.pth"
+        elif chosen_model == "Pillarnet0128":
+            def_cfg_file  = "tools/cfgs/nuscenes_models/pillarnet0128_awsim.yaml"
+            def_ckpt_file = "models/pillarnet0128_awsim_e20.pth"
+        elif chosen_model == "Pillarnet0200":
+            def_cfg_file  = "tools/cfgs/nuscenes_models/pillarnet0200_awsim.yaml"
+            def_ckpt_file = "models/pillarnet0200_awsim_e20.pth"
+        elif chosen_model == "MURAL_Pillarnet":
+            def_cfg_file  = "tools/cfgs/nuscenes_models/mural_pillarnet_0100_0128_0200_awsim.yaml"
+            def_ckpt_file = "models/mural_pillarnet_0100_0128_0200_awsim_e20.pth"
+            global DYN_RES
+            DYN_RES = True
+        else:
+            self.get_logger().warn(f"UNKNOWN LIDAR DNN MODEL NAME: {chosen_model}")
+
         def_cfg_file  = os.path.join(pth, def_cfg_file)
-        def_ckpt_file = "models/mural_pillarnet_0100_0128_0200_awsim_e20.pth"
         def_ckpt_file = os.path.join(pth, def_ckpt_file)
+        
+        self.get_logger().info(f"LIDAR DNN MODEL NAME: {chosen_model}")
 
         cfg_from_yaml_file(def_cfg_file, cfg)
         #if args.set_cfgs is not None:
-        set_cfgs = ['MODEL.METHOD', 12,
-            'MODEL.DEADLINE_SEC', 0.100,
+        set_cfgs = ['MODEL.METHOD', 7,
+            'MODEL.DEADLINE_SEC', 10.0,
             'MODEL.DENSE_HEAD.NAME', 'CenterHeadInf',
             'OPTIMIZATION.BATCH_SIZE_PER_GPU', '1']
         cfg_from_list(set_cfgs, cfg)
@@ -118,6 +199,7 @@ class InferenceNode(Node):
         model.load_params_from_file(filename=def_ckpt_file, logger=logger, to_cpu=False)
         model.eval()
         model.cuda()
+        model.simulate_exec_time = SIM_EXEC_TIME
         self.model_cfg = cfg
 
         self.dataset = model.dataset
@@ -126,9 +208,6 @@ class InferenceNode(Node):
         cls_names = [str(i) for i in cfg.CLASS_NAMES]
         self.cls_mapping = { cls_names.index(name)+1: oc.__getattribute__(name.upper()) \
                 for name in cls_names }
-
-        #for k, m in self.cls_mapping.items():
-        #    self.get_logger().warn(str(k) + ":" + str(m))
 
         print('[IS] Calibrating...')
         torch.cuda.cudart().cudaProfilerStop()
@@ -149,24 +228,83 @@ class InferenceNode(Node):
         model.res_idx = 0 # initial resolution
 
     def vel_callback(self, vel_report):
+        global DYN_RES
         if DYN_RES:
             longtd_vel = vel_report.longitudinal_velocity
             lateral_vel = vel_report.lateral_velocity
 
             vel = math.sqrt(longtd_vel**2 + lateral_vel**2)
 
-            num_res = 5
-            self.model.res_idx = round((vel / self.vel_limit) * num_res)
-            if self.model.res_idx >= num_res:
-                self.model.res_idx = num_res - 1
+            deadline_ms = inv_deadline_mapping(vel, 0, self.vel_limit, 66, 283)
+            self.model._default_deadline_sec = deadline_ms * 1e-3
+            #self.get_logger().info(f"mapped deadline ms {deadline_ms}")
 
-    def pc_callback(self, multi_arr):
+#            num_res = 5
+#            self.model.res_idx = round((vel / self.vel_limit) * num_res)
+#            if self.model.res_idx >= num_res:
+#                self.model.res_idx = num_res - 1
+
+    def read_from_shmem(self):
+        if not self.shm_attached:
+            self.attach_to_shm()
+            self.shm_attached = True
+
+        self.mutex.acquire()
+        self.shared_pc_data.seek(0)
+
+        # Read the header (first two floats)
+        header_bytes = self.shared_pc_data.read(8)  # 2 floats, 4 bytes each
+        num_points, num_fields = struct.unpack('ff', header_bytes)
+        num_points = int(num_points)
+        num_fields = int(num_fields)
+        
+        # Calculate data size
+        data_bytes_size = num_points * num_fields * 4  # 4 bytes per float
+        
+        # Read the data portion directly from the current position
+        data_bytes = self.shared_pc_data.read(data_bytes_size)
+        
+        # Convert to numpy array
+        float_array = np.frombuffer(data_bytes, dtype=np.float32)
+        
+        # Reshape based on the dimensions
+        reshaped_array = float_array.reshape(num_points, num_fields)
+        
+        # Convert to torch tensor
+        tensor = torch.from_numpy(reshaped_array).cuda()
+        self.mutex.release()
+        
+        return tensor
+
+
+    def pc_callback(self, pc_ready_msg):
+        if self.delegate_gt:
+            if self.latest_gt_queue:
+                # Convert all timestamps to seconds
+                pc_time = pc_ready_msg.stamp.sec + pc_ready_msg.stamp.nanosec / 1e9
+                timestamps = [s.header.stamp.sec + s.header.stamp.nanosec / 1e9 for s in self.latest_gt_queue]
+                timestamps = np.array(timestamps)
+
+                # Find all timestamps smaller than pc_time
+                diffs = timestamps - pc_time
+                smaller_indices = np.where(diffs <= 0)[0]
+
+                if len(smaller_indices) > 0:
+                    # Get the most recent one (largest timestamp that's still smaller than pc_time)
+                    idx = smaller_indices[-1]
+                    self.det_pub.publish(self.latest_gt_queue[idx])
+                else:
+                    self.get_logger().warn("No ground truth messages found before the point cloud timestamp")
+            return
+
         if not self.model_initialized:
             return
 
         ridx = self.get_parameter('model_res_idx').value
-        if ridx >= 0 and ridx < 5:
+        if ridx >= 0 and ridx < 6:
             self.model.res_idx = ridx
+
+        #self.get_logger().info(f"Deadline is {round(self.model._default_deadline_sec * 1000)} ms")
 
         with record_function("inference"):
             model = self.model
@@ -179,7 +317,8 @@ class InferenceNode(Node):
             #deadline_sec_override, reset = model.initialize(sample_token)
 
             with torch.no_grad():
-                tensor = f32_multi_arr_to_tensor(multi_arr).cuda()
+                #tensor = f32_multi_arr_to_tensor(multi_arr).cuda()
+                tensor = self.read_from_shmem()
                 # the reference frame of awsim is baselink, so we need to change that to
                 # lidar by decreasing z
                 batch_id = torch.zeros(tensor.size(0), dtype=tensor.dtype,  device=tensor.device)
@@ -189,12 +328,14 @@ class InferenceNode(Node):
                 }
                 torch.cuda.synchronize() # remove me
 
+                #self.get_logger().warn(f"Num points: {tensor.size(0)}")
+
                 # Up to here, avege time spent is 3ms
 
                 batch_dict['batch_size'] = 1
                 batch_dict['scene_reset'] = False
                 batch_dict['start_time_sec'] = start_time
-                batch_dict['deadline_sec'] = 10.0
+                batch_dict['deadline_sec'] = self.model._default_deadline_sec
                 batch_dict['abs_deadline_sec'] = start_time + batch_dict['deadline_sec']
                 model.measure_time_end('PreProcess')
                 batch_dict = model.forward(batch_dict)
@@ -206,8 +347,8 @@ class InferenceNode(Node):
                     for k,v in batch_dict['final_box_dicts'][0].items():
                         batch_dict['final_box_dicts'][0][k] = v.cpu()
 
-            model.latest_batch_dict = {k: batch_dict[k] for k in \
-                    ['final_box_dicts']}
+                model.latest_batch_dict = {k: batch_dict[k] \
+                        for k in ['final_box_dicts']}
 
             model.measure_time_end('PostProcess')
             model.measure_time_end('End-to-end')
@@ -217,25 +358,45 @@ class InferenceNode(Node):
             model.last_elapsed_time_musec = int(model._time_dict['End-to-end'][-1] * 1000)
 
             pred_dict = batch_dict['final_box_dicts'][0]
-            pred_dict['pred_boxes'] = self.tranform_to_base_link(pred_dict['pred_boxes'])
+            pred_dict['pred_boxes'] = self.transform_to_base_link(pred_dict['pred_boxes'])
 
-            pc_stamp = multi_arr.header.stamp
-            self.publish_dets(pred_dict, pc_stamp)
             end_time_mntc = time.monotonic()
-            time_since_last_publish = end_time_mntc - self.publish_time_mntc
-            self.publish_time_mntc = end_time_mntc
-
             processing_time_ms = (end_time_mntc - start_time_mntc) * 1e3
-            time_msg = Float64Stamped() 
-            time_msg.stamp = start_time_stamp
-            time_msg.data = processing_time_ms
-            self.processing_time_pub.publish(time_msg)
 
-            # NOTE The following appears to be not working well
-            #cur_time = self.get_clock().now()
-            #pipeline_time = cur_time - Time.from_msg(pc_stamp)
-            #time_msg.data = pipeline_time.nanoseconds * 1e-6
-            #self.pipeline_time_pub.publish(time_msg)
+        if model.simulate_exec_time:
+            #assert not model.is_calibrating()
+            num_points = batch_dict['points'].size(0)
+            num_voxels = batch_dict.get('bb3d_num_voxels', None)
+            if num_voxels is not None:
+                num_voxels = np.array(num_voxels)
+            xmin, xmax = batch_dict['tensor_slice_inds']
+            xlen = xmax - xmin + 1
+            exec_time_ms = model.calibrators[model.res_idx].pred_exec_time_ms(
+                    num_points, num_voxels, xlen, consider_prep_time=True)
+            #self.get_logger().info(f"Simulating resolution {model.res_idx}, exec time is {exec_time_ms} ms")
+
+            # sleep to simulate it
+            sleep_time_ms = exec_time_ms - processing_time_ms
+            if sleep_time_ms > 0:
+                time.sleep(sleep_time_ms * 1e-3)
+                processing_time_ms = exec_time_ms
+            else:
+                self.get_logger().warn(f"Actual DNN execution time is higher than simulated time!")
+
+        pc_stamp = pc_ready_msg.stamp
+        self.publish_dets(pred_dict, pc_stamp)
+        time_since_last_publish = time.monotonic() - self.publish_time_mntc
+        self.publish_time_mntc = end_time_mntc
+
+        int_msg = Int64Stamped()
+        int_msg.stamp = start_time_stamp
+        int_msg.data = int(self.model.res_idx)
+        self.res_idx_pub.publish(int_msg)
+
+        time_msg = Float64Stamped() 
+        time_msg.stamp = start_time_stamp
+        time_msg.data = processing_time_ms
+        self.processing_time_pub.publish(time_msg)
 
         idx = self.sample_counter % len(self.past_publish_times) 
         self.past_publish_times[idx] = time_since_last_publish
@@ -251,6 +412,8 @@ class InferenceNode(Node):
     # This func takes less than 1 ms, ~0.6 ms
     def publish_dets(self, pred_dict, stamp):
         # publish even if its empty
+        #pred_dict = self.model.get_empty_det_dict()  # This is for debugging if objdet is necessary
+
         float_arr = pred_dict_to_f32_multi_arr(pred_dict, stamp)
         self.arr_pub.publish(float_arr)
         if PUB_DEBUG_DETS:
@@ -282,7 +445,7 @@ def main():
     #                    help='set extra config keys if needed')
 
     #cmdline_args = parser.parse_args()
-    period_sec = 0.1 # point cloud period
+    period_sec = 0.05 # point cloud period
     #RunInferenceNode(cmdline_args, period_sec)
     RunInferenceNode(period_sec)
 

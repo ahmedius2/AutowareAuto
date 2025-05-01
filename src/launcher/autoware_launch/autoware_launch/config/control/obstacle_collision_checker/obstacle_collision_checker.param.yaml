@@ -1,7 +1,7 @@
 /**:
   ros__parameters:
     # Node
-    update_rate: 10.0
+    update_rate: 20.0
 
     # Core
     delay_time: 0.03 # delay time of vehicle [s]

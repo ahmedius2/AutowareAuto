@@ -297,12 +297,14 @@ bool BehaviorVelocityPlannerNode::processData(rclcpp::Clock clock)
     is_ready = false;
   }
 
-  const auto no_ground_pointcloud = sub_no_ground_pointcloud_.takeData();
-  if (no_ground_pointcloud) {
-    processNoGroundPointCloud(no_ground_pointcloud);
-  } else {
-    logData("pointcloud");
-    is_ready = false;
+  if(false){
+    const auto no_ground_pointcloud = sub_no_ground_pointcloud_.takeData();
+    if (no_ground_pointcloud) {
+      processNoGroundPointCloud(no_ground_pointcloud);
+    } else {
+      logData("pointcloud");
+      is_ready = false;
+    }
   }
 
   // optional data

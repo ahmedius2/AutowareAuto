@@ -19,13 +19,20 @@ msg_tuples = [
         'autoware_adapi_v1_msgs/msg/OperationModeState'),
         ('src/universe/external/tier4_autoware_msgs/tier4_debug_msgs/msg/Float64Stamped.msg',
          'tier4_debug_msgs/msg/Float64Stamped'),
+        ('src/universe/external/tier4_autoware_msgs/tier4_debug_msgs/msg/Int64Stamped.msg',
+         'tier4_debug_msgs/msg/Int64Stamped'),
         ('src/core/autoware_msgs/autoware_vehicle_msgs/msg/VelocityReport.msg',
         'autoware_vehicle_msgs/msg/VelocityReport'),
         ('src/core/autoware_msgs/autoware_perception_msgs/msg/DetectedObjects.msg',
          'autoware_perception_msgs/msg/DetectedObjects'),
         ('src/core/autoware_msgs/autoware_perception_msgs/msg/PredictedObjects.msg',
-         'autoware_perception_msgs/msg/PredictedObjects')
-
+         'autoware_perception_msgs/msg/PredictedObjects'),
+        ('src/core/autoware_msgs/autoware_control_msgs/msg/Longitudinal.msg',
+         'autoware_control_msgs/msg/Longitudinal'),
+        ('src/core/autoware_msgs/autoware_control_msgs/msg/Lateral.msg',
+         'autoware_control_msgs/msg/Lateral'),
+        ('src/core/autoware_msgs/autoware_control_msgs/msg/Control.msg',
+         'autoware_control_msgs/msg/Control'),
 ]
 add_types = {}
 for pth, msg_name in msg_tuples:
@@ -45,29 +52,37 @@ def add_to_dict(data_dict, stat_name, timestamp, data):
     d['timestamps'].append(timestamp)
     d['data'].append(data)
 
-def read_bag(bag_file_path):
+def read_bag(bag_file_path, csv_str):
     experiment_name = bag_file_path.split('/')[-1]
     data_dict = {}
 
-    start_ts, end_ts = None, None
+    #start_ts, end_ts = None, None
+    opmode_change_msgs = []
     # create reader instance and open for reading
     with AnyReader([Path(bag_file_path)], default_typestore=typestore) as reader:
         #connections = [x for x in reader.connections if x.topic == topic]
-
+        #backup_end_ts = 0
         connections = reader.connections
         for connection, timestamp, rawdata in reader.messages(connections=connections):
+            ts = float(timestamp) * 1e-9
             if 'time_ms' in connection.topic:
                 key = connection.topic + '_ms'
                 create_entry(data_dict, key, 'Milliseconds', experiment_name)
 
                 msg = reader.deserialize(rawdata, connection.msgtype)
                 exec_time_ms = msg.data
-                add_to_dict(data_dict, key, float(timestamp) * 1e-9, exec_time_ms)
+                add_to_dict(data_dict, key, ts, exec_time_ms)
+            if 'selected_res_idx' in connection.topic:
+                key = connection.topic + '_ms'
+                create_entry(data_dict, key, 'ResolutionIdx', experiment_name)
+
+                msg = reader.deserialize(rawdata, connection.msgtype)
+                res_idx = msg.data
+                add_to_dict(data_dict, key, ts, res_idx)
             elif 'metrics' in connection.topic:
                 msg = reader.deserialize(rawdata, connection.msgtype)
                 for stat in msg.status:
                     create_entry(data_dict, stat.name, stat.name, experiment_name)
-                    ts = float(timestamp) * 1e-9
                     if len(stat.values) == 1: # key is metric_value
                         data = float(stat.values[0].value)
                     elif len(stat.values) == 3: # keys are min max mean
@@ -76,14 +91,14 @@ def read_bag(bag_file_path):
             elif 'operation_mode' in connection.topic:
                 msg = reader.deserialize(rawdata, connection.msgtype)
                 mode = int(msg.mode)
-                ts = float(timestamp) * 1e-9
-                if mode == 2 and (start_ts is None or ts < start_ts):
-                    start_ts = ts
-                elif mode == 1 and (end_ts is None or ts > end_ts):
-                    end_ts = ts
+                opmode_change_msgs.append((ts, mode))
+#                if mode == 1 and (end_ts is None or ts > end_ts):
+#                    end_ts = ts
+#                elif mode == 2 and (start_ts is None or ts < start_ts):
+#                    start_ts = ts
             elif 'velocity_status' in connection.topic:
                 msg = reader.deserialize(rawdata, connection.msgtype)
-                ts = timestamp * 1e-9
+#                backup_end_ts = max(ts, backup_end_ts)
 
                 longtd_vel = msg.longitudinal_velocity
                 lateral_vel = msg.lateral_velocity
@@ -91,8 +106,47 @@ def read_bag(bag_file_path):
 
                 create_entry(data_dict, 'Velocity', 'm/s', experiment_name)
                 add_to_dict(data_dict, 'Velocity', ts, vel)
+            elif 'object_distances' in connection.topic:
+                msg = reader.deserialize(rawdata, connection.msgtype)
 
-    assert (start_ts is not None) and (end_ts is not None)
+                dist_str = msg.frame_id
+                tuples = dist_str.split(';')
+                for tpl in tuples:
+                    if ':' in tpl:
+                        obj_name, dist = tpl.split(':')
+                        create_entry(data_dict, f'distance_to_{obj_name}', 'm', experiment_name)
+                        add_to_dict(data_dict, f'distance_to_{obj_name}', ts, float(dist))
+            elif 'trigger_events' in connection.topic:
+                msg = reader.deserialize(rawdata, connection.msgtype)
+                obj_name = msg.frame_id
+
+                key = 'trigger_ts_' + obj_name
+                create_entry(data_dict, key, 'TimeStampSeconds', experiment_name)
+                add_to_dict(data_dict, key, ts, True)
+            elif 'control_cmd' in connection.topic:
+                msg = reader.deserialize(rawdata, connection.msgtype)
+                acc = msg.longitudinal.acceleration
+                create_entry(data_dict, 'Acceleration', 'm/s^2', experiment_name)
+                add_to_dict(data_dict, 'Acceleration', ts, acc)
+            elif 'autonomous_emergency_braking' in connection.topic:
+                msg = reader.deserialize(rawdata, connection.msgtype)
+                if len(msg.markers) > 0:
+                    create_entry(data_dict, 'AEB', 'bool', experiment_name)
+                    add_to_dict(data_dict, 'AEB', ts, True)
+
+    ocm = np.array(opmode_change_msgs)
+    inds = np.argsort(ocm[:, 0])
+    ocm = ocm[inds]
+    engage_inds = np.where(ocm[:, 1] == 2)[0]
+    for i in engage_inds:
+        csv_str += str(ocm[i+1, 0] - ocm[i, 0]) + ','
+
+    start_ts = ocm[engage_inds[0], 0]
+    end_ts = ocm[engage_inds[-1]+1, 0]
+#    if end_ts < start_ts:
+#        end_ts = backup_end_ts
+
+#    assert (start_ts is not None) and (end_ts is not None)
 
     # Do filtering
     for dct in data_dict.values():
@@ -102,31 +156,56 @@ def read_bag(bag_file_path):
         dct['timestamps'] = timestamps[mask] - start_ts
         dct['data'] = data[mask]
 
-    if 'Velocity' in data_dict:
-        timestamps = np.array(data_dict['Velocity']['timestamps'])
-        velocities = np.array(data_dict['Velocity']['data'])
+#    if 'Velocity' in data_dict:
+#        timestamps = np.array(data_dict['Velocity']['timestamps'])
+#        velocities = np.array(data_dict['Velocity']['data'])
+#
+#        sort_inds = np.argsort(timestamps)
+#        timestamps = timestamps[sort_inds]
+#        velocities = velocities[sort_inds]
+#        
+#        # Calculate time differences between consecutive points
+#        dt = np.diff(timestamps)
+#        
+#        # Calculate acceleration (first derivative of velocity)
+#        accelerations = np.diff(velocities) / dt
+#        mean_acceleration = np.abs(accelerations).mean()
+#        
+#        # Calculate jerk (second derivative of velocity)
+#        jerks = np.diff(accelerations) / dt[:-1]
+#        mean_jerk = np.abs(jerks).mean()
+#        #print(experiment_name, 'mean acc:', mean_acceleration, 'mean jerk:', mean_jerk)
 
-        sort_inds = np.argsort(timestamps)
-        timestamps = timestamps[sort_inds]
-        velocities = velocities[sort_inds]
-        
-        # Calculate time differences between consecutive points
-        dt = np.diff(timestamps)
-        
-        # Calculate acceleration (first derivative of velocity)
-        accelerations = np.diff(velocities) / dt
-        mean_acceleration = np.abs(accelerations).mean()
-        
-        # Calculate jerk (second derivative of velocity)
-        jerks = np.diff(accelerations) / dt[:-1]
-        mean_jerk = np.abs(jerks).mean()
-        print(experiment_name, 'mean acc:', mean_acceleration, 'mean jerk:', mean_jerk)
+#    aeb = data_dict['AEB']
+#    aeb_ts_arr = np.array(aeb['timestamps'])
+
+    acc = data_dict['Acceleration']
+    acc_data = np.array(acc['data'])
+    acc_ts_arr = np.array(acc['timestamps'])
+    for k in data_dict.keys():
+        if 'distance_to' in k:
+            obj_name = k[len('distance_to_'):]
+            min_dist = min(data_dict[k]['data'])
+            print(f'Minimum distance observed for object {obj_name}: {min_dist}')
+            csv_str += str(min_dist) + ","
+        elif 'trigger_ts' in k:
+            obj_name = k[len('trigger_ts_'):]
+            trigger_ts = data_dict[k]['timestamps'][0] # should be just one
+           
+            # Find all timestamps smaller than pc_time
+            diffs = trigger_ts - acc_ts_arr 
+            ind = np.where(diffs <= 0)[0][0]
+            while acc_data[ind] >= 0:
+                ind += 1
+            dec_ts = acc_ts_arr[ind]
+            print(obj_name, 'reaction time (ms):', round((dec_ts - trigger_ts)*1000))
 
     print(experiment_name, 'time to reach destination:', end_ts - start_ts, 'seconds')
+    csv_str += str(end_ts - start_ts) + "\n"
     create_entry(data_dict, 'end_timestamp', 'seconds', experiment_name)
     add_to_dict(data_dict, 'end_timestamp', end_ts - start_ts, end_ts - start_ts)
 
-    return data_dict
+    return data_dict, csv_str
 
 def merge_data_dicts(data_dicts):
     #determine start end timestamps
@@ -142,7 +221,7 @@ def merge_data_dicts(data_dicts):
 
     return merged_data_dict, glob_end_ts
 
-def plot_all(merged_data_dicts, glob_end_ts, dest_dir="../../shared/aw_timing_plots/"):
+def plot_all(merged_data_dicts, glob_end_ts, dest_dir="./aw_timing_plots/"):
     strings = []
     for stat_name, data_dicts in merged_data_dicts.items():
         fig, ax = plt.subplots(1, 1, figsize=(12, 3), constrained_layout=True)
@@ -168,7 +247,7 @@ def plot_all(merged_data_dicts, glob_end_ts, dest_dir="../../shared/aw_timing_pl
             plt.savefig(target_dir + "/" + fname)
             plt.close(fig)
         else:
-            target_dir = "../../shared/aw_timing_plots"
+            target_dir = "./aw_timing_plots"
             for dd in data_dicts:
                 timestamps = dd['timestamps']
                 data = dd['data']
@@ -186,16 +265,23 @@ def plot_all(merged_data_dicts, glob_end_ts, dest_dir="../../shared/aw_timing_pl
             plt.savefig(pth)
             plt.close(fig)
  
-    for s in sorted(strings):
-        print(s)
-
 if __name__ == '__main__':
     data_dicts = []
 
     paths = sorted(glob.glob(sys.argv[1] + '/*'))
+    csv_str = ""
     for pth in paths:
         print(pth)
-        data_dicts.append(read_bag(pth))
+        dd, csv_str = read_bag(pth, csv_str)
+        data_dicts.append(dd)
+    print('DATA IN CSV FORMAT:')
+    print(csv_str)
+    print('AVERAGES OF EXPERIMENTS:')
+    elems = [[float(e) for e in line.split(',')] for line in csv_str.split('\n') if line != '']
+    averages = [str(e) for e in np.mean(np.array(elems), axis=0).round(2)]
+    print(','.join(averages))
+    print()
+
     merged_data_dicts, glob_end_ts = merge_data_dicts(data_dicts)
     plot_all(merged_data_dicts, glob_end_ts)
 

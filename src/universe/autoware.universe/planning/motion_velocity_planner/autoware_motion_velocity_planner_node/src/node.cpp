@@ -163,12 +163,15 @@ bool MotionVelocityPlannerNode::update_planner_data(
     planner_data_.predicted_objects = *predicted_objects_ptr;
   processing_times["update_planner_data.pred_obj"] = sw.toc(true);
 
-  const auto no_ground_pointcloud_ptr = sub_no_ground_pointcloud_.takeData();
-  if (check_with_log(no_ground_pointcloud_ptr, "Waiting for pointcloud")) {
-    const auto no_ground_pointcloud = process_no_ground_pointcloud(no_ground_pointcloud_ptr);
-    if (no_ground_pointcloud) planner_data_.no_ground_pointcloud = *no_ground_pointcloud;
+  if(false)
+  {
+    const auto no_ground_pointcloud_ptr = sub_no_ground_pointcloud_.takeData();
+    if (check_with_log(no_ground_pointcloud_ptr, "Waiting for pointcloud")) {
+      const auto no_ground_pointcloud = process_no_ground_pointcloud(no_ground_pointcloud_ptr);
+      if (no_ground_pointcloud) planner_data_.no_ground_pointcloud = *no_ground_pointcloud;
+    }
+    processing_times["update_planner_data.pcd"] = sw.toc(true);
   }
-  processing_times["update_planner_data.pcd"] = sw.toc(true);
 
   const auto occupancy_grid_ptr = sub_occupancy_grid_.takeData();
   if (check_with_log(occupancy_grid_ptr, "Waiting for the occupancy grid"))

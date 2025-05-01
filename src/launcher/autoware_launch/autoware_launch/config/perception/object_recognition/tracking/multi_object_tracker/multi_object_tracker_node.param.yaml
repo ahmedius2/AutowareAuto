@@ -10,7 +10,7 @@
     motorcycle_tracker: "pedestrian_and_bicycle_tracker"
 
     # default tracker node parameters
-    publish_rate: 10.0
+    publish_rate: 20.0
     world_frame_id: map
     enable_delay_compensation: true
 

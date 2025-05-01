@@ -192,9 +192,11 @@
         <remap from="~/input/pointcloud" to="/perception/obstacle_segmentation/pointcloud"/>
         <remap from="~/input/velocity" to="/vehicle/status/velocity_status"/>
         <remap from="~/input/imu" to="/sensing/imu/imu_data"/>
-        <remap from="~/input/objects" to="/perception/obstacle_segmentation/objects"/>
+        <remap from="~/input/objects" to="/perception/object_recognition/objects"/>
         <remap from="~/input/predicted_trajectory" to="/control/trajectory_follower/lateral/predicted_trajectory"/>
         <param from="$(var aeb_param_path)"/>
+        <param name="use_pointcloud_data" value="false"/>
+        <param name="use_predicted_object_data" value="true"/>
         <extra_arg name="use_intra_process_comms" value="$(var use_intra_process)"/>
       </composable_node>
     </load_composable_node>

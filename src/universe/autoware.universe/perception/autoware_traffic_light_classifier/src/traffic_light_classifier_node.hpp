@@ -91,6 +91,7 @@ private:
 
   double backlight_threshold_;
   bool is_harsh_backlight(const cv::Mat & img) const;
+  bool assume_all_lights_are_green_;
 };
 
 }  // namespace autoware::traffic_light

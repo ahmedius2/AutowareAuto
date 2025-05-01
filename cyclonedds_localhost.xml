@@ -4,6 +4,12 @@
       <AllowMulticast>false</AllowMulticast>
       <MaxMessageSize>65500B</MaxMessageSize>
     </General>
+    <!--
+    <SharedMemory>
+      <Enable>true</Enable>
+      <LogLevel>info</LogLevel>
+    </SharedMemory>
+    -->
 
     <Internal>
       <!-- <SocketReceiveBufferSize min="10MB"/> -->

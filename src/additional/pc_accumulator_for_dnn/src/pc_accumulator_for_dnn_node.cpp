@@ -29,8 +29,8 @@ namespace pc_acc_for_dnn
   PCloudAccForDnnComponent::PCloudAccForDnnComponent(const rclcpp::NodeOptions & options)
     : Node("PointcloudAccumulatorForDNN", options)
   {
-    accumulation_time_sec_ = declare_parameter<double>("accumulation_time_sec", 0.5);
-    point_cloud_buf_sz_ = declare_parameter<int>("pcloud_queue_size", 3);
+    accumulation_time_sec_ = declare_parameter<double>("accumulation_time_sec", 0.55);
+    point_cloud_buf_sz_ = declare_parameter<int>("pcloud_queue_size", 5);
     debug_mode_ = declare_parameter<bool>("debug", false);
 
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
@@ -40,13 +40,12 @@ namespace pc_acc_for_dnn
         "input/pointcloud", rclcpp::SensorDataQoS(),
         std::bind(&PCloudAccForDnnComponent::pointcloud_callback, this, std::placeholders::_1));
 
-    floatarr_pub_ = create_publisher<valo_msgs::msg::Float32MultiArrayStamped>(
-        "accumulated_pc_as_arr", 10);
+    pc_notify_pub_ = create_publisher<std_msgs::msg::Header>("accumulated_pc_as_arr", rclcpp::SensorDataQoS());
 
-    if(debug_mode_){
-      debug_pc_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
+//if(debug_mode_){
+    debug_pc_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(
           "debug/accumulated_pointcloud", 10);
-    }
+//    }
 
     stop_watch_ = 
       std::make_unique<autoware::universe_utils::StopWatch<std::chrono::milliseconds>>();
@@ -54,11 +53,21 @@ namespace pc_acc_for_dnn
         "~/exec_time_ms", 10);
    //pipeline_time_pub_ = create_publisher<tier4_debug_msgs::msg::Float64Stamped>(
    //     "~/debug/pipeline_time_ms", 10);
+   //
+    // In your node's initialization
+    shm_data_size_ = 500000 * 4 * sizeof(float); // Around 8 MB
+    shm_fd_ = shm_open(shm_name_, O_CREAT | O_RDWR, 0666);
+    ftruncate(shm_fd_, shm_data_size_);
+    shared_pc_data_ = (float*)mmap(nullptr, shm_data_size_, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd_, 0);
+
+    shm_mutex_ = sem_open(sem_name_, O_CREAT, 0666, 1);
   }
 
   void PCloudAccForDnnComponent::pointcloud_callback(
       const sensor_msgs::msg::PointCloud2::SharedPtr input)
   {
+    debug_mode_ = this->get_parameter("debug").as_bool();
+
     auto tp = std::chrono::system_clock::now();
     rclcpp::Time pc_arrival_sys_time(tp.time_since_epoch().count());
     stop_watch_->tic("processing_time");
@@ -131,22 +140,12 @@ namespace pc_acc_for_dnn
       pairs.push_front(std::make_pair(input, nullptr));
     }
 
-    valo_msgs::msg::Float32MultiArrayStamped multarr;
-    multarr.header.frame_id = "velodyne_top";
-    multarr.header.stamp = pairs.front().first->header.stamp;
     auto num_fields = 4; // x, y, z, t
-    auto dim1 = std_msgs::msg::MultiArrayDimension();
-    dim1.label = "num_points";
-    dim1.size = num_all_points;
-    dim1.stride = num_all_points * num_fields;
-    auto dim2 = std_msgs::msg::MultiArrayDimension();
-    dim2.label = "xyzt"; // no intensity cuz awsim doesnt have it
-    dim2.size = num_fields;
-    dim2.stride = num_fields;
-    multarr.array.layout.dim.push_back(dim1);
-    multarr.array.layout.dim.push_back(dim2);
-    multarr.array.layout.data_offset = 0;
-    multarr.array.data.resize(num_all_points * num_fields);
+    std_msgs::msg::Header new_pc_notify_msg;
+    new_pc_notify_msg.frame_id = "velodyne_top";
+    new_pc_notify_msg.stamp = pairs.front().first->header.stamp;
+
+    // after these, put the data
 
     sensor_msgs::msg::PointCloud2 debug_pc;
     if(debug_mode_){
@@ -179,6 +178,10 @@ namespace pc_acc_for_dnn
         baselink_to_velotop_t.transform.translation.x,
         baselink_to_velotop_t.transform.translation.y,
         baselink_to_velotop_t.transform.translation.z) * q3;
+
+    sem_wait(shm_mutex_);
+    shared_pc_data_[0] = num_all_points;
+    shared_pc_data_[1] = num_fields;
 
     int point_counter = 0;
     for (auto p : pairs){ // from newest to oldest
@@ -218,14 +221,15 @@ namespace pc_acc_for_dnn
         points = bl_to_vlt_t.matrix() * points;
       }
 
+      float* data_ptr = &shared_pc_data_[2];
       for(size_t i=0; i_itr != i_itr.end(); ++i, ++i_itr, ++point_counter){
         //NOTE still need to do the transformation and timing
         auto idx = point_counter * num_fields;
-        //multarr.array.data[idx] = 0; // batch size always 0
-        multarr.array.data[idx] = points(0, i);
-        multarr.array.data[idx+1] = points(1, i);
-        multarr.array.data[idx+2] = points(2, i);
-        multarr.array.data[idx+3] = tdiff; // save it as sec
+        data_ptr[idx] = points(0, i);
+        data_ptr[idx+1] = points(1, i);
+        data_ptr[idx+2] = points(2, i);
+        data_ptr[idx+3] = tdiff; // save it as sec
+
         if(debug_mode_){
           // ignore rettype and channel?
           uint8_t* addr = &debug_pc.data[point_counter * debug_pc.point_step];
@@ -241,8 +245,9 @@ namespace pc_acc_for_dnn
         }
       }
     }
+    sem_post(shm_mutex_);
 
-    floatarr_pub_->publish(multarr);
+    pc_notify_pub_->publish(new_pc_notify_msg);
 
     const auto processing_time_ms = stop_watch_->toc("processing_time");
     tier4_debug_msgs::msg::Float64Stamped time_msg;

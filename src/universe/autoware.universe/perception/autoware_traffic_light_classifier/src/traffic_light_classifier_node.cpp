@@ -19,6 +19,7 @@
 #include <memory>
 #include <utility>
 #include <vector>
+#include <cstdlib>
 
 namespace autoware::traffic_light
 {
@@ -61,6 +62,13 @@ TrafficLightClassifierNodelet::TrafficLightClassifierNodelet(const rclcpp::NodeO
       this->get_logger(), "please install CUDA, CUDNN and TensorRT to use cnn classifier");
 #endif
   }
+
+  char* env_str = std::getenv("ASSUME_ALL_TLIGHTS_ARE_GREEN");
+  if(env_str != nullptr)
+    assume_all_lights_are_green_ = (std::stoi(env_str) > 0);
+  else
+    assume_all_lights_are_green_ = false;
+
 }
 
 void TrafficLightClassifierNodelet::connectCb()
@@ -135,6 +143,15 @@ void TrafficLightClassifierNodelet::imageRoiCallback(
       RCLCPP_ERROR(this->get_logger(), "failed classify image, abort callback");
       return;
     }
+    if (assume_all_lights_are_green_){
+      for (auto& signal : output_msg.signals){
+        for(auto& elem : signal.elements){
+          elem.color = tier4_perception_msgs::msg::TrafficLightElement::GREEN;
+          elem.shape = tier4_perception_msgs::msg::TrafficLightElement::CIRCLE;
+          elem.confidence = 1.0;
+        }
+      }
+    }
   }
 
   // append the undetected rois as unknown
@@ -147,9 +164,16 @@ void TrafficLightClassifierNodelet::imageRoiCallback(
       tlr_sig.traffic_light_id = input_roi.traffic_light_id;
       tlr_sig.traffic_light_type = input_roi.traffic_light_type;
       tier4_perception_msgs::msg::TrafficLightElement element;
-      element.color = tier4_perception_msgs::msg::TrafficLightElement::UNKNOWN;
-      element.shape = tier4_perception_msgs::msg::TrafficLightElement::CIRCLE;
-      element.confidence = 0.0;
+      if(assume_all_lights_are_green_){
+        element.color = tier4_perception_msgs::msg::TrafficLightElement::GREEN;
+        element.shape = tier4_perception_msgs::msg::TrafficLightElement::CIRCLE;
+        element.confidence = 1.0;
+      }
+      else{
+        element.color = tier4_perception_msgs::msg::TrafficLightElement::UNKNOWN;
+        element.shape = tier4_perception_msgs::msg::TrafficLightElement::CIRCLE;
+        element.confidence = 0.0;
+      }
       tlr_sig.elements.push_back(element);
       output_msg.signals.push_back(tlr_sig);
     }
@@ -158,9 +182,16 @@ void TrafficLightClassifierNodelet::imageRoiCallback(
   for (const auto & idx : backlight_indices) {
     auto & elements = output_msg.signals.at(idx).elements;
     for (auto & element : elements) {
-      element.color = tier4_perception_msgs::msg::TrafficLightElement::UNKNOWN;
-      element.shape = tier4_perception_msgs::msg::TrafficLightElement::UNKNOWN;
-      element.confidence = 0.0;
+      if(assume_all_lights_are_green_){
+        element.color = tier4_perception_msgs::msg::TrafficLightElement::GREEN;
+        element.shape = tier4_perception_msgs::msg::TrafficLightElement::CIRCLE;
+        element.confidence = 1.0;
+      }
+      else{
+        element.color = tier4_perception_msgs::msg::TrafficLightElement::UNKNOWN;
+        element.shape = tier4_perception_msgs::msg::TrafficLightElement::UNKNOWN;
+        element.confidence = 0.0;
+      }
     }
   }
 

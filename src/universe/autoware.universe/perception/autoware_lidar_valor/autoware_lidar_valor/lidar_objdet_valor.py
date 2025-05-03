@@ -190,6 +190,7 @@ class InferenceNode(Node):
         set_cfgs = ['MODEL.METHOD', 7,
             'MODEL.DEADLINE_SEC', 10.0,
             'MODEL.DENSE_HEAD.NAME', 'CenterHeadInf',
+            'MODEL.DENSE_HEAD.POST_PROCESSING.SCORE_THRESH', '0.3',
             'OPTIMIZATION.BATCH_SIZE_PER_GPU', '1']
         cfg_from_list(set_cfgs, cfg)
 
@@ -235,7 +236,7 @@ class InferenceNode(Node):
 
             vel = math.sqrt(longtd_vel**2 + lateral_vel**2)
 
-            deadline_ms = inv_deadline_mapping(vel, 0, self.vel_limit, 66, 283)
+            deadline_ms = inv_deadline_mapping(vel, 0, self.vel_limit, 100, 250)
             self.model._default_deadline_sec = deadline_ms * 1e-3
             #self.get_logger().info(f"mapped deadline ms {deadline_ms}")
 

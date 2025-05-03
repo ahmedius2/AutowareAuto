@@ -58,6 +58,7 @@ def read_bag(bag_file_path, csv_str):
 
     #start_ts, end_ts = None, None
     opmode_change_msgs = []
+    collisions = []
     # create reader instance and open for reading
     with AnyReader([Path(bag_file_path)], default_typestore=typestore) as reader:
         #connections = [x for x in reader.connections if x.topic == topic]
@@ -135,10 +136,12 @@ def read_bag(bag_file_path, csv_str):
                     add_to_dict(data_dict, 'AEB', ts, True)
 
     ocm = np.array(opmode_change_msgs)
-    inds = np.argsort(ocm[:, 0])
+    inds = np.argsort(ocm[:, 0]) # sort wrt timestamp
     ocm = ocm[inds]
+    print(ocm[:, 1])
     engage_inds = np.where(ocm[:, 1] == 2)[0]
     for i in engage_inds:
+        assert ocm[i+1, 1] == 1 # make sure it is stop
         csv_str += str(ocm[i+1, 0] - ocm[i, 0]) + ','
 
     start_ts = ocm[engage_inds[0], 0]
@@ -166,15 +169,6 @@ def read_bag(bag_file_path, csv_str):
 #        
 #        # Calculate time differences between consecutive points
 #        dt = np.diff(timestamps)
-#        
-#        # Calculate acceleration (first derivative of velocity)
-#        accelerations = np.diff(velocities) / dt
-#        mean_acceleration = np.abs(accelerations).mean()
-#        
-#        # Calculate jerk (second derivative of velocity)
-#        jerks = np.diff(accelerations) / dt[:-1]
-#        mean_jerk = np.abs(jerks).mean()
-#        #print(experiment_name, 'mean acc:', mean_acceleration, 'mean jerk:', mean_jerk)
 
 #    aeb = data_dict['AEB']
 #    aeb_ts_arr = np.array(aeb['timestamps'])
@@ -182,23 +176,34 @@ def read_bag(bag_file_path, csv_str):
     acc = data_dict['Acceleration']
     acc_data = np.array(acc['data'])
     acc_ts_arr = np.array(acc['timestamps'])
+
+    vel = data_dict['Velocity']
+    vel_data = np.array(vel['data'])
+    vel_ts_arr = np.array(vel['timestamps'])
+
     for k in data_dict.keys():
         if 'distance_to' in k:
             obj_name = k[len('distance_to_'):]
             min_dist = min(data_dict[k]['data'])
             print(f'Minimum distance observed for object {obj_name}: {min_dist}')
             csv_str += str(min_dist) + ","
+            #csv_str += str(1 if min_dist < 0.1 else 0) + ","
         elif 'trigger_ts' in k:
             obj_name = k[len('trigger_ts_'):]
             trigger_ts = data_dict[k]['timestamps'][0] # should be just one
-           
+
+            # Get the velocity of the car at trigger
+            diffs = trigger_ts - vel_ts_arr 
+            ind = np.where(diffs <= 0)[0][0]
+            vel_at_trigger = vel_data[ind]
+
             # Find all timestamps smaller than pc_time
             diffs = trigger_ts - acc_ts_arr 
             ind = np.where(diffs <= 0)[0][0]
             while acc_data[ind] >= 0:
                 ind += 1
             dec_ts = acc_ts_arr[ind]
-            print(obj_name, 'reaction time (ms):', round((dec_ts - trigger_ts)*1000))
+            print(obj_name, 'reaction time (ms):', round((dec_ts - trigger_ts)*1000), ', ego-vel at trigger:', round(vel_at_trigger, 2))
 
     print(experiment_name, 'time to reach destination:', end_ts - start_ts, 'seconds')
     csv_str += str(end_ts - start_ts) + "\n"
@@ -270,7 +275,7 @@ if __name__ == '__main__':
 
     paths = sorted(glob.glob(sys.argv[1] + '/*'))
     csv_str = ""
-    for pth in paths:
+    for pth in paths[:10]:
         print(pth)
         dd, csv_str = read_bag(pth, csv_str)
         data_dicts.append(dd)
@@ -278,8 +283,15 @@ if __name__ == '__main__':
     print(csv_str)
     print('AVERAGES OF EXPERIMENTS:')
     elems = [[float(e) for e in line.split(',')] for line in csv_str.split('\n') if line != '']
-    averages = [str(e) for e in np.mean(np.array(elems), axis=0).round(2)]
-    print(','.join(averages))
+    elems = np.array(elems)
+    #perc25 = [str(e) for e in np.percentile(elems, 25, axis=0, method='closest_observation').round(2)]
+    #median = [str(e) for e in np.median(elems, axis=0).round(2)]
+    mean = [str(e) for e in np.mean(elems, axis=0).round(2)]
+    #perc75 = [str(e) for e in np.percentile(elems, 75, axis=0, method='closest_observation').round(2)]
+    #print(','.join(perc25))
+    #print(','.join(median))
+    #print(','.join(perc75))
+    print(','.join(mean))
     print()
 
     merged_data_dicts, glob_end_ts = merge_data_dicts(data_dicts)

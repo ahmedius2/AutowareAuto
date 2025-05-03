@@ -60,7 +60,7 @@ class ResetAndEngageNode(Node):
         while num_clock_messages < 5:
             if self.get_clock().now().nanoseconds > 0:
                 num_clock_messages += 1
-            rclpy.spin_once(self, timeout_sec=1.0)
+            rclpy.spin_once(self, timeout_sec=0.5)
             if num_clock_messages == 0:
                 self.get_logger().info('RAE Waiting for simulation time...')
 
@@ -99,13 +99,13 @@ class ResetAndEngageNode(Node):
                     self.traffic_reset_pub.publish(header_msg)
                     self.engage_pub.publish(engage_msg)
                     start_time = time.time()
-                rclpy.spin_once(self)
+                rclpy.spin_once(self, timeout_sec=0.1)
                 time.sleep(0.1)
             if not self.timeout:
                 self.get_logger().info('RAE Car engaged successfully.')
         elif self.operation == 'waitstop':
             while not self.stopped and not self.timeout:
-                rclpy.spin_once(self)
+                rclpy.spin_once(self, timeout_sec=0.1)
                 time.sleep(0.1)
             if not self.timeout:
                 self.get_logger().info('RAE Car stopped successfully.')

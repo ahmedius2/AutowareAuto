@@ -72,7 +72,7 @@
     topic_type: autoware_perception_msgs/msg/PredictedObjects
     best_effort: false
     transient_local: false
-    warn_rate: 5.0
+    warn_rate: 1.0
     error_rate: 1.0
     timeout: 1.0
 
@@ -85,9 +85,9 @@
     topic_type: autoware_perception_msgs/msg/TrafficLightGroupArray
     best_effort: false
     transient_local: false
-    warn_rate: 5.0
-    error_rate: 1.0
-    timeout: 1.0
+    warn_rate: 0.0
+    error_rate: 0.0
+    timeout: 0.0
 
 - module: planning
   mode: [online, logging_simulation, planning_simulation]

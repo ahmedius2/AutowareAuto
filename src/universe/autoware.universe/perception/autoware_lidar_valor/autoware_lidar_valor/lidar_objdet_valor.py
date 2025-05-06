@@ -385,7 +385,7 @@ class InferenceNode(Node):
                 self.get_logger().warn(f"Actual DNN execution time is higher than simulated time!")
 
         pc_stamp = pc_ready_msg.stamp
-        self.publish_dets(pred_dict, pc_stamp)
+        self.publish_dets(pred_dict, pc_stamp, 'base_link')
         time_since_last_publish = time.monotonic() - self.publish_time_mntc
         self.publish_time_mntc = end_time_mntc
 
@@ -411,11 +411,11 @@ class InferenceNode(Node):
             self.sample_counter = 0
 
     # This func takes less than 1 ms, ~0.6 ms
-    def publish_dets(self, pred_dict, stamp):
+    def publish_dets(self, pred_dict, stamp, frame_id):
         # publish even if its empty
         #pred_dict = self.model.get_empty_det_dict()  # This is for debugging if objdet is necessary
 
-        float_arr = pred_dict_to_f32_multi_arr(pred_dict, stamp)
+        float_arr = pred_dict_to_f32_multi_arr(pred_dict, stamp, frame_id)
         self.arr_pub.publish(float_arr)
         if PUB_DEBUG_DETS:
             det_objs = f32_multi_arr_to_detected_objs(float_arr, self.cls_mapping)

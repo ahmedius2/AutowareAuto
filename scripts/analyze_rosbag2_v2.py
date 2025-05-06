@@ -4,6 +4,7 @@ import math
 import glob
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.spatial import distance
 from builtin_interfaces.msg import Time
 from callback_profile.msg import CallbackProfile
 from pathlib import Path
@@ -23,10 +24,6 @@ msg_tuples = [
          'tier4_debug_msgs/msg/Int64Stamped'),
         ('src/core/autoware_msgs/autoware_vehicle_msgs/msg/VelocityReport.msg',
         'autoware_vehicle_msgs/msg/VelocityReport'),
-        ('src/core/autoware_msgs/autoware_perception_msgs/msg/DetectedObjects.msg',
-         'autoware_perception_msgs/msg/DetectedObjects'),
-        ('src/core/autoware_msgs/autoware_perception_msgs/msg/PredictedObjects.msg',
-         'autoware_perception_msgs/msg/PredictedObjects'),
         ('src/core/autoware_msgs/autoware_control_msgs/msg/Longitudinal.msg',
          'autoware_control_msgs/msg/Longitudinal'),
         ('src/core/autoware_msgs/autoware_control_msgs/msg/Lateral.msg',
@@ -34,6 +31,13 @@ msg_tuples = [
         ('src/core/autoware_msgs/autoware_control_msgs/msg/Control.msg',
          'autoware_control_msgs/msg/Control'),
 ]
+
+perc_msgs_pth = 'src/core/autoware_msgs/autoware_perception_msgs/msg'
+for msg_file_pth in glob.glob(perc_msgs_pth + '/*.msg'):
+    msg_name = msg_file_pth.split('/')[-1]
+    tpl = (msg_file_pth, f'autoware_perception_msgs/msg/{msg_name[:-4]}')
+    msg_tuples.append(tpl)
+
 add_types = {}
 for pth, msg_name in msg_tuples:
     msg_text = Path(pth).read_text()
@@ -52,13 +56,23 @@ def add_to_dict(data_dict, stat_name, timestamp, data):
     d['timestamps'].append(timestamp)
     d['data'].append(data)
 
+
+def get_snr_idx(ts, snr_t_slices):
+    for i, (start_ts, end_ts) in enumerate(snr_t_slices):
+        if ts <= end_ts and ts >= start_ts:
+            return i
+    return -1
+
 def read_bag(bag_file_path, csv_str):
     experiment_name = bag_file_path.split('/')[-1]
     data_dict = {}
+    calc_false_pos = True
 
     #start_ts, end_ts = None, None
     opmode_change_msgs = []
-    collisions = []
+    collision_ts_list = []
+    gt_objects = []
+    pred_objects = []
     # create reader instance and open for reading
     with AnyReader([Path(bag_file_path)], default_typestore=typestore) as reader:
         #connections = [x for x in reader.connections if x.topic == topic]
@@ -67,7 +81,7 @@ def read_bag(bag_file_path, csv_str):
         for connection, timestamp, rawdata in reader.messages(connections=connections):
             ts = float(timestamp) * 1e-9
             if 'time_ms' in connection.topic:
-                key = connection.topic + '_ms'
+                key = connection.topic
                 create_entry(data_dict, key, 'Milliseconds', experiment_name)
 
                 msg = reader.deserialize(rawdata, connection.msgtype)
@@ -93,10 +107,6 @@ def read_bag(bag_file_path, csv_str):
                 msg = reader.deserialize(rawdata, connection.msgtype)
                 mode = int(msg.mode)
                 opmode_change_msgs.append((ts, mode))
-#                if mode == 1 and (end_ts is None or ts > end_ts):
-#                    end_ts = ts
-#                elif mode == 2 and (start_ts is None or ts < start_ts):
-#                    start_ts = ts
             elif 'velocity_status' in connection.topic:
                 msg = reader.deserialize(rawdata, connection.msgtype)
 #                backup_end_ts = max(ts, backup_end_ts)
@@ -134,22 +144,117 @@ def read_bag(bag_file_path, csv_str):
                 if len(msg.markers) > 0:
                     create_entry(data_dict, 'AEB', 'bool', experiment_name)
                     add_to_dict(data_dict, 'AEB', ts, True)
+            elif 'on_collision' in connection.topic:
+                msg = reader.deserialize(rawdata, connection.msgtype)
+                collision_ts_list.append(ts)
+            elif calc_false_pos and 'perception/object_recognition/objects' in connection.topic:
+                msg = reader.deserialize(rawdata, connection.msgtype)
+                #obj_ts = msg.header.stamp
+                #obj_ts = obj_ts.sec + obj_ts.nanosec * 1e-9
+                l = np.empty((len(msg.objects), 4))
+                for i, obj in enumerate(msg.objects):
+                    label = obj.classification[0].label
+                    position = obj.kinematics.initial_pose_with_covariance.pose.position
+                    l[i] = (label, position.x, position.y, position.z)
+                pred_objects.append((ts, l))
+            elif calc_false_pos and 'awsim/ground_truth/perception/object_recognition/detection/objects' in connection.topic:
+                msg = reader.deserialize(rawdata, connection.msgtype)
+                #obj_ts = msg.header.stamp
+                #obj_ts = obj_ts.sec + obj_ts.nanosec * 1e-9
+                l = np.empty((len(msg.objects), 4))
+                for i, obj in enumerate(msg.objects):
+                    label = obj.classification[0].label
+                    position = obj.kinematics.pose_with_covariance.pose.position
+                    l[i] = (label, position.x, position.y, position.z)
+                gt_objects.append((ts, l))
 
     ocm = np.array(opmode_change_msgs)
     inds = np.argsort(ocm[:, 0]) # sort wrt timestamp
     ocm = ocm[inds]
     print(ocm[:, 1])
     engage_inds = np.where(ocm[:, 1] == 2)[0]
+    snr_t_slices = []
     for i in engage_inds:
         assert ocm[i+1, 1] == 1 # make sure it is stop
         csv_str += str(ocm[i+1, 0] - ocm[i, 0]) + ','
+        snr_t_slices.append([ocm[i,0], ocm[i+1,0]])
+
+    num_scenarios = len(snr_t_slices)
+
+    for k, dct in data_dict.items():
+        if 'valor_dnn/exec_time_ms' in k:
+            exec_times = [list() for _ in range(num_scenarios)]
+            data = dct['data']
+            ts_arr = dct['timestamps']
+            for ts, etime in zip(ts_arr, data):
+                snr_idx = get_snr_idx(ts, snr_t_slices)
+                if snr_idx == -1:
+                    continue
+                exec_times[snr_idx].append(etime)
+            mean_exec_times = [sum(l)/len(l) for l in exec_times]
+            print(f'Mean scenario exec times of lidar dnn:', mean_exec_times)
+            min_exec_times = [min(l) for l in exec_times]
+            print(f'Min scenario exec times of lidar dnn:', min_exec_times)
+
+    if calc_false_pos:
+        dist_th = 4 # meters
+
+        gt_objects.sort()
+        gt_ts_arr = np.array([gto[0] for gto in gt_objects])
+        pred_objects.sort()
+
+        false_positives = np.zeros(num_scenarios)
+        no_match = np.zeros(num_scenarios)
+        num_all_preds = np.zeros(num_scenarios)
+        for pred_ts, cur_pred_objs in pred_objects:
+            snr_idx = get_snr_idx(pred_ts, snr_t_slices)
+            if snr_idx == -1:
+                continue
+
+            #find the closest ts
+            idx = np.searchsorted(gt_ts_arr, pred_ts)
+            idx = idx - 1 if idx == len(gt_ts_arr) else idx
+            if abs(gt_ts_arr[idx] - pred_ts) > 0.050: # shouldn't be greater than 50 ms
+                no_match[snr_idx] += 1
+            else:
+                # do matching
+                num_all_preds[snr_idx] += len(cur_pred_objs)
+                cur_gt_objs = gt_objects[idx][1]
+                for label in (1, 2, 7): # car truck pedestrian
+                    mask = (cur_pred_objs[:, 0] == label)
+                    cls_objs = cur_pred_objs[mask, 1:]
+                    mask = (cur_gt_objs[:, 0] == label)
+                    cls_gt_objs  = cur_gt_objs[mask, 1:]
+                    if len(cls_gt_objs) == 0:
+                        false_positives[snr_idx] += len(cls_objs)
+                        continue
+
+                    true_positives = 0
+                    for i in range(len(cls_objs)):
+                        dists = distance.cdist(cls_gt_objs, cls_objs[i:i+1], 'euclidean').flatten()
+                        min_idx = np.argmin(dists)
+                        if dists[min_idx] < dist_th:
+                            true_positives += 1 
+                            cur_gt_objs[min_idx, :] = 0. # make sure it won't match again
+                    false_positives[snr_idx] += (len(cls_objs) - true_positives)
+        #print('Prediction samples without a match:', no_match)
+        fp_rates = false_positives/num_all_preds
+        print('Num all preds:', num_all_preds)
+        print('False positive rate:', fp_rates)
+        for fprt in fp_rates:
+            csv_str += str(fprt) + ","
+
+    # there could be undetected collusions as well!
+    detected_collusions = [False] * num_scenarios
+    for col_t in collision_ts_list:
+        snr_idx = get_snr_idx(col_t, snr_t_slices)
+        if snr_idx != -1:
+            detected_collusions[snr_idx] = True
+
+    print('Detected collusion for each scenario:', np.array(detected_collusions).astype(int))
 
     start_ts = ocm[engage_inds[0], 0]
     end_ts = ocm[engage_inds[-1]+1, 0]
-#    if end_ts < start_ts:
-#        end_ts = backup_end_ts
-
-#    assert (start_ts is not None) and (end_ts is not None)
 
     # Do filtering
     for dct in data_dict.values():
@@ -203,10 +308,13 @@ def read_bag(bag_file_path, csv_str):
             while acc_data[ind] >= 0:
                 ind += 1
             dec_ts = acc_ts_arr[ind]
-            print(obj_name, 'reaction time (ms):', round((dec_ts - trigger_ts)*1000), ', ego-vel at trigger:', round(vel_at_trigger, 2))
+            print(obj_name, 'reaction time (ms):', 
+                  round((dec_ts - trigger_ts)*1000),
+                  ', ego-vel at trigger:', round(vel_at_trigger, 2))
 
     print(experiment_name, 'time to reach destination:', end_ts - start_ts, 'seconds')
-    csv_str += str(end_ts - start_ts) + "\n"
+    #csv_str += str(end_ts - start_ts) + "\n"
+    csv_str = csv_str[:-1] + "\n"
     create_entry(data_dict, 'end_timestamp', 'seconds', experiment_name)
     add_to_dict(data_dict, 'end_timestamp', end_ts - start_ts, end_ts - start_ts)
 
@@ -236,7 +344,7 @@ def plot_all(merged_data_dicts, glob_end_ts, dest_dir="./aw_timing_plots/"):
             target_dir = dest_dir + "/".join(fields[:-2])
             os.makedirs(target_dir, exist_ok=True)
             fname =  fields[-2] + '-' + fields[-1]
-        
+
             # Plot the data
             for dd in data_dicts:
                 timestamps = dd['timestamps']
@@ -275,7 +383,7 @@ if __name__ == '__main__':
 
     paths = sorted(glob.glob(sys.argv[1] + '/*'))
     csv_str = ""
-    for pth in paths[:10]:
+    for pth in paths[:1]:
         print(pth)
         dd, csv_str = read_bag(pth, csv_str)
         data_dicts.append(dd)

@@ -43,8 +43,7 @@ run_aw()
 run_bag_record()
 {
   rm -rf awsim_exp_rosbag2
-  TOPICS="/awsim/object_recognition/matched_objects
-    /vehicle/status/velocity_status
+  TOPICS="/vehicle/status/velocity_status
     /control/command/control_cmd
     /system/operation_mode/state
     /perception/object_recognition/detection/obstacle_pointcloud_based_validator_node/exec_time_ms
@@ -54,15 +53,13 @@ run_bag_record()
     /perception/object_recognition/tracking/multi_object_tracker/exec_time_ms
     /perception/object_recognition/detection/valor/lidar_objdet_valor_dnn/selected_res_idx
     /awsim/object_distances
-    /awsim/trigger_events"
+    /awsim/trigger_events
+    /awsim/ground_truth/on_collision
+    /perception/object_recognition/objects
+    /awsim/ground_truth/perception/object_recognition/detection/objects"
 
   #/control/autonomous_emergency_braking/info/markers
-  #/perception/object_recognition/objects
   #/control/command/emergency_cmd
-  #/awsim/ground_truth/on_collision
-  #/perception/object_recognition/detection/objects
-  #/awsim/ground_truth/perception/object_recognition/detection/objects
-  #nice --20 taskset 00ff ros2 bag record -o $TARGET_DIR $TOPICS < /dev/null &
   nice --20 taskset 00ff ros2 bag record -o $TARGET_DIR $TOPICS < /dev/null &
   ros2_pid=$!  # Capture the PID of the ros2 launch process
   rosbag_pgid=$(ps -o pgid= -p $ros2_pid | grep -o '[0-9]*')
@@ -97,35 +94,34 @@ nice --20 ros2 topic pub -1 /awsim/traffic_reset std_msgs/msg/Header "{frame_id:
 #  autoware_perception_msgs/msg/DetectedObjects --once
 sleep 60 # wait for autoware to initialize
 
-#send_goal_pose 81597.9 50207.1 0.0600405 0.998196 # end to end
 run_bag_record $1
 printf "Sending goal pose 1\n"
-send_goal_pose 81403.1 49968.5 0.758414 0.651773 # after crowded area
+send_goal_pose 81402.5 49969.5 0.756025 0.654542 # after crowded area
 sleep 2
-nice --20 python scripts/reset_and_engage.py engage 2
+python scripts/reset_and_engage.py engage 2
 sleep 10 # this might be needed
-nice --20 python scripts/reset_and_engage.py waitstop
+python scripts/reset_and_engage.py waitstop
 
 printf "Sending goal pose 2\n"
-send_goal_pose 81400.1 50170.6 0.068659 0.99764 # after truck
+send_goal_pose 81401.9 50171.2 0.0927328 0.995691
 sleep 2
-nice --20 python scripts/reset_and_engage.py engage 2
+python scripts/reset_and_engage.py engage 2
 sleep 10
-nice --20 python scripts/reset_and_engage.py waitstop
+python scripts/reset_and_engage.py waitstop
 
 printf "Sending goal pose 3\n"
-send_goal_pose 81597.9 50207.1 0.0600405 0.998196 # after jaycar
+send_goal_pose 81596.6 50207.0 0.0921405 0.995746
 sleep 2
-nice --20 python scripts/reset_and_engage.py engage 2
+python scripts/reset_and_engage.py engage 2
 sleep 10
-nice --20 python scripts/reset_and_engage.py waitstop
+python scripts/reset_and_engage.py waitstop
 
 printf "Sending goal pose 4\n"
 send_goal_pose 81717.4 50229.2 0.0626653 0.998035 # after jaywalker
 sleep 2
-nice --20 python scripts/reset_and_engage.py engage 2
+python scripts/reset_and_engage.py engage 2
 sleep 10
-nice --20 python scripts/reset_and_engage.py waitstop
+python scripts/reset_and_engage.py waitstop
 
 # stop bag recorder and aw
 kill -SIGINT -$rosbag_pgid
